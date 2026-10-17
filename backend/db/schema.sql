@@ -1,6 +1,7 @@
+-- Postgres Database Schema for Fishing Competition App
+
 CREATE TYPE user_role AS ENUM ('ADMIN', 'JUDGE', 'ANGLER');
 CREATE TYPE tournament_status AS ENUM ('DRAFT', 'OPEN', 'IN_PROGRESS', 'FINISHED');
-
 
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
@@ -10,7 +11,6 @@ CREATE TABLE users (
     role user_role DEFAULT 'ANGLER',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
 
 CREATE TABLE tournaments (
     id SERIAL PRIMARY KEY,
@@ -23,7 +23,6 @@ CREATE TABLE tournaments (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-
 CREATE TABLE registrations (
     id SERIAL PRIMARY KEY,
     tournament_id INT REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -33,7 +32,6 @@ CREATE TABLE registrations (
     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_user_tournament UNIQUE (tournament_id, user_id)
 );
-
 
 CREATE TABLE catches (
     id SERIAL PRIMARY KEY,

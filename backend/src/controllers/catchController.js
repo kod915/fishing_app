@@ -1,6 +1,5 @@
 const db = require('../config/db');
 
-
 exports.addCatch = async (req, res) => {
   const { tournament_id, user_id, species, weight_grams } = req.body;
   const registered_by = req.user.id;
@@ -13,10 +12,9 @@ exports.addCatch = async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ message: 'Błąd zapisywania połowu', error: err.message });
+    res.status(500).json({ message: 'Błąd dodawania połowu', error: err.message });
   }
 };
-
 
 exports.getLeaderboard = async (req, res) => {
   const { tournamentId } = req.params;
@@ -40,6 +38,6 @@ exports.getLeaderboard = async (req, res) => {
     const result = await db.query(query, [tournamentId]);
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: 'Błąd pobierania tabeli wyników', error: err.message });
+    res.status(500).json({ message: 'Błąd pobierania wyników', error: err.message });
   }
 };
