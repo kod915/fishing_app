@@ -5,13 +5,17 @@ export const apiRequest = async (endpoint, method = 'GET', body = null) => {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const config = {
     method,
     headers,
     body: body ? JSON.stringify(body) : null,
-  });
+  };
 
+  const response = await fetch(`${API_BASE}${endpoint}`, config);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.message || 'Błąd połączenia');
+  
+  if (!response.ok) {
+    throw new Error(data.message || 'Wystąpił błąd podczas połączenia z serwerem');
+  }
   return data;
 };

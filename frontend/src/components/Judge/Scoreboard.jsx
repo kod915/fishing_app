@@ -12,12 +12,12 @@ export default function Scoreboard({ tournament }) {
       <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '10px' }}>
         <thead>
           <tr style={{ backgroundColor: '#f1f5f9', textAlign: 'left' }}>
-            <th style={{ padding: '10px' }}>Poz.</th>
+            <th style={{ padding: '10px' }}>Pozycja</th>
             <th style={{ padding: '10px' }}>Zawodnik</th>
             <th style={{ padding: '10px' }}>Sektor / Stanowisko</th>
             <th style={{ padding: '10px' }}>Ilość Ryb</th>
             <th style={{ padding: '10px' }}>Największa Ryba</th>
-            <th style={{ padding: '10px' }}>Łączna Waga</th>
+            <th style={{ padding: '10px' }}>Łączna Waga (g)</th>
           </tr>
         </thead>
         <tbody>
