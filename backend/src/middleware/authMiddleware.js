@@ -13,6 +13,20 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Jak authenticateToken, ale brak/nieprawidłowy token nie blokuje żądania –
+// req.user jest wtedy undefined. Dla endpointów publicznych, które zwracają
+// więcej danych zalogowanym (np. lista turniejów z wersjami roboczymi dla organizatorów).
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return next();
+
+  jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
+    if (!err) req.user = user;
+    next();
+  });
+};
+
 const requireRole = (...roles) => {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
@@ -22,4 +36,4 @@ const requireRole = (...roles) => {
   };
 };
 
-module.exports = { authenticateToken, requireRole };
+module.exports = { authenticateToken, optionalAuth, requireRole };

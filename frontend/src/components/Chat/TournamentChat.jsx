@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { apiRequest } from '../../api/client';
-
-const SOCKET_URL = 'http://localhost:5000';
+import { apiRequest, SOCKET_URL } from '../../api/client';
 
 // scala listy wiadomości bez duplikatów (po id)
 const mergeById = (a, b) => {
@@ -18,26 +16,47 @@ export default function TournamentChat({ tournament, user }) {
     const [connected, setConnected] = useState(false);
     const socketRef = useRef(null);
     const bottomRef = useRef(null);
+    // id ostatniej znanej wiadomości – po ponownym połączeniu dociągamy tylko nowsze
+    const lastIdRef = useRef(0);
+
+    useEffect(() => {
+        lastIdRef.current = messages.length ? messages[messages.length - 1].id : 0;
+    }, [messages]);
 
     useEffect(() => {
         if (!tournament) return;
         let cancelled = false;
         setMessages([]);
         setError('');
+        lastIdRef.current = 0;
 
-        // 1. historia z REST
-        apiRequest(`/chat/${tournament.id}`)
-            .then((history) => { if (!cancelled) setMessages((prev) => mergeById(history, prev)); })
-            .catch((e) => { if (!cancelled) setError(e.message); });
+        // Historia z REST. Przy pierwszym wywołaniu – ostatnie 100 wiadomości,
+        // przy kolejnych (reconnect) – tylko te, które przyszły w czasie rozłączenia.
+        const fetchHistory = () => {
+            const after = lastIdRef.current;
+            return apiRequest(`/chat/${tournament.id}${after ? `?after=${after}` : ''}`)
+                .then((history) => { if (!cancelled) setMessages((prev) => mergeById(prev, history)); })
+                .catch((e) => { if (!cancelled) setError(e.message); });
+        };
 
-        // 2. połączenie w czasie rzeczywistym
-        const socket = io(SOCKET_URL, { auth: { token: localStorage.getItem('token') } });
+        // Połączenie w czasie rzeczywistym.
+        // Sam websocket (bez long-pollingu) – nie wymaga sticky sessions na load balancerze.
+        const socket = io(SOCKET_URL || undefined, {
+            auth: { token: localStorage.getItem('token') },
+            transports: ['websocket'],
+        });
         socketRef.current = socket;
 
+        // 'connect' odpala się też przy każdym automatycznym reconnect
         socket.on('connect', () => {
             socket.emit('chat:join', tournament.id, (res) => {
-                if (res && res.ok) setConnected(true);
-                else setError((res && res.message) || 'Nie udało się dołączyć do czatu');
+                if (res && res.ok) {
+                    setConnected(true);
+                    setError('');
+                    fetchHistory();
+                } else {
+                    setError((res && res.message) || 'Nie udało się dołączyć do czatu');
+                }
             });
         });
         socket.on('disconnect', () => setConnected(false));

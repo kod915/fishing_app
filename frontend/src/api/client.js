@@ -1,4 +1,9 @@
-const API_BASE = 'http://localhost:5000/api';
+// Domyślnie ścieżki względne: w dev Vite proxuje /api -> backend (vite.config.js),
+// w produkcji robi to nginx / load balancer. VITE_API_URL pozwala nadpisać (np. https://api.domen.pl/api).
+export const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+// Adres serwera Socket.IO. Pusty string = ten sam origin co frontend.
+export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || '';
 
 export const apiRequest = async (endpoint, method = 'GET', body = null) => {
   const token = localStorage.getItem('token');

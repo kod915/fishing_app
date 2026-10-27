@@ -17,8 +17,11 @@ CREATE TABLE tournaments (
     name VARCHAR(255) NOT NULL,
     location VARCHAR(255) NOT NULL,
     event_date DATE NOT NULL,
-    max_participants INT DEFAULT 30,
-    status tournament_status DEFAULT 'OPEN',
+    max_participants INT NOT NULL DEFAULT 30 CHECK (max_participants > 0),
+    -- Liczba stanowisk w jednym sektorze (Sektor A: 1..N, Sektor B: 1..N, ...)
+    spots_per_sector INT NOT NULL DEFAULT 10 CHECK (spots_per_sector > 0),
+    -- Nowe zawody są wersją roboczą; admin otwiera zapisy jawnie (DRAFT -> OPEN)
+    status tournament_status NOT NULL DEFAULT 'DRAFT',
     created_by INT REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -30,7 +33,9 @@ CREATE TABLE registrations (
     sector VARCHAR(10),
     spot_number INT,
     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT unique_user_tournament UNIQUE (tournament_id, user_id)
+    CONSTRAINT unique_user_tournament UNIQUE (tournament_id, user_id),
+    -- Jedno stanowisko może zająć tylko jedna osoba
+    CONSTRAINT unique_tournament_spot UNIQUE (tournament_id, sector, spot_number)
 );
 
 CREATE TABLE catches (

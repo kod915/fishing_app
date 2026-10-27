@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
-const { canAccessChat } = require('../services/chatAccess');
+const { checkChatAccess } = require('../services/chatAccess');
+const { parsePositiveInt } = require('../utils/validation');
 
 module.exports = (io) => {
     // Autoryzacja połączenia tym samym JWT co REST API
@@ -17,10 +18,13 @@ module.exports = (io) => {
     io.on('connection', (socket) => {
         socket.on('chat:join', async (tournamentId, ack) => {
             try {
-                const id = Number(tournamentId);
-                if (!(await canAccessChat(socket.user, id))) {
-                    return ack && ack({ ok: false, message: 'Dołącz do zawodów, aby korzystać z czatu.' });
-                }
+                const id = parsePositiveInt(tournamentId);
+                if (!id) return ack && ack({ ok: false, message: 'Nieprawidłowy identyfikator zawodów.' });
+
+                const access = await checkChatAccess(socket.user, id);
+                if (access === 'not_found') return ack && ack({ ok: false, message: 'Zawody nie istnieją.' });
+                if (access === 'forbidden') return ack && ack({ ok: false, message: 'Dołącz do zawodów, aby korzystać z czatu.' });
+
                 socket.join(`tournament:${id}`);
                 ack && ack({ ok: true });
             } catch (e) {
@@ -29,7 +33,8 @@ module.exports = (io) => {
         });
 
         socket.on('chat:send', async ({ tournamentId, content } = {}, ack) => {
-            const id = Number(tournamentId);
+            const id = parsePositiveInt(tournamentId);
+            if (!id) return ack && ack({ ok: false, message: 'Nieprawidłowy identyfikator zawodów.' });
             const room = `tournament:${id}`;
             const text = String(content || '').trim().slice(0, 1000);
 

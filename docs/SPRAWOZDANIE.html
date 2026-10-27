@@ -1,0 +1,251 @@
+﻿<!DOCTYPE html>
+<html lang="pl"><head><meta charset="UTF-8"><title>Sprawozdanie – Fishing Manager</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;font-size:11pt;line-height:1.4;max-width:900px;margin:30px auto;color:#111}
+h1{font-size:20pt}h2{font-size:16pt;margin-top:28px;border-bottom:1px solid #999;padding-bottom:4px}h3{font-size:13pt;margin-top:20px}
+table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #888;padding:5px 8px;vertical-align:top;text-align:left}th{background:#e8e8e8}
+pre{font-family:Consolas,'Courier New',monospace;font-size:9pt;background:#f4f4f4;border:1px solid #ccc;padding:8px;white-space:pre;overflow-x:auto;line-height:1.2}
+code{font-family:Consolas,'Courier New',monospace;font-size:9.5pt;background:#f4f4f4;padding:0 3px}
+hr{border:0;border-top:1px solid #bbb;margin:24px 0}
+</style></head><body>
+<h1>Bezpieczeństwo serwerów i aplikacji Web – Laboratorium</h1>
+<h2>Sprawozdanie grupowe: aplikacja „Fishing Manager”</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Prowadzący</strong></td>
+<td>mgr inż. Jakub Tomaszewski</td>
+</tr>
+<tr>
+<td><strong>Skład grupy</strong></td>
+<td><em>[imiona i nazwiska członków grupy]</em></td>
+</tr>
+<tr>
+<td><strong>Repozytorium</strong></td>
+<td><a href="https://github.com/kod915/fishing_app">https://github.com/kod915/fishing_app</a></td>
+</tr>
+<tr>
+<td><strong>Data</strong></td>
+<td>27.10.2026</td>
+</tr>
+<tr>
+<td><strong>Zakres</strong></td>
+<td>L1 – wybór aplikacji, L2 – implementacja w środowisku DEV</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>L1. Wybór aplikacji do implementacji</h2>
+<h3>1.1. Opis aplikacji</h3>
+<p><strong>Fishing Manager</strong> to aplikacja webowa do obsługi zawodów wędkarskich. Organizator (administrator) tworzy zawody i otwiera zapisy, wędkarze zapisują się i automatycznie otrzymują sektor oraz numer stanowiska, sędziowie w trakcie zawodów rejestrują złowione ryby (gatunek, waga), a system na bieżąco wylicza ranking. Każde zawody mają własny czat działający w czasie rzeczywistym dla uczestników i organizatorów.</p>
+<h3>1.2. Spełnienie wymagań funkcjonalnych</h3>
+<table>
+<thead>
+<tr>
+<th>Wymaganie</th>
+<th>Realizacja</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prosta strona web z logowaniem (sesją)</td>
+<td>Rejestracja i logowanie e-mail + hasło. Hasła przechowywane jako hash <strong>bcrypt</strong> (cost 10). Sesja realizowana tokenem <strong>JWT</strong> (ważność 24 h) przesyłanym w nagłówku <code>Authorization: Bearer</code>. Trzy role: <code>ADMIN</code>, <code>JUDGE</code>, <code>ANGLER</code>.</td>
+</tr>
+<tr>
+<td>Interakcja z użytkownikiem – forum, chat, komentarze</td>
+<td><strong>Czat zawodów w czasie rzeczywistym</strong> (Socket.IO / WebSocket). Dostęp mają zapisani uczestnicy i organizatorzy; historia wiadomości zapisywana w bazie; po zerwaniu połączenia klient dociąga pominięte wiadomości.</td>
+</tr>
+<tr>
+<td>Baza danych – dowolna</td>
+<td><strong>PostgreSQL 16</strong> – 5 tabel relacyjnych z kluczami obcymi, ograniczeniami CHECK/UNIQUE i typami ENUM.</td>
+</tr>
+<tr>
+<td>Technologia – znana grupie</td>
+<td><strong>JavaScript na całym stosie</strong>: Node.js 22 + Express (backend), React 18 + Vite (frontend).</td>
+</tr>
+</tbody></table>
+<h3>1.3. Stos technologiczny</h3>
+<table>
+<thead>
+<tr>
+<th>Warstwa</th>
+<th>Technologia</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Frontend</td>
+<td>React 18, Vite 5, socket.io-client</td>
+</tr>
+<tr>
+<td>Backend</td>
+<td>Node.js 22, Express 4, Socket.IO 4, jsonwebtoken, bcrypt, pg</td>
+</tr>
+<tr>
+<td>Baza danych</td>
+<td>PostgreSQL 16</td>
+</tr>
+<tr>
+<td>Cache / pub-sub</td>
+<td>Redis 7 (adapter Socket.IO dla wielu instancji)</td>
+</tr>
+<tr>
+<td>Konteneryzacja</td>
+<td>Docker, Docker Compose, nginx (reverse proxy)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>L2. Implementacja podstawowej funkcjonalności (środowisko DEV)</h2>
+<h3>2.1. Architektura aplikacji</h3>
+<pre><code>┌──────────────────────┐     HTTP /api/*      ┌─────────────────────────┐
+│  Przeglądarka        │ ───────────────────▶ │  Backend (Express)      │
+│  React SPA (Vite)    │   WebSocket          │  REST API + Socket.IO   │
+│                      │ ◀──────────────────▶ │                         │
+└──────────────────────┘   /socket.io         └───────────┬─────────────┘
+                                                          │ SQL (pg)
+                                                          ▼
+                                              ┌─────────────────────────┐
+                                              │  PostgreSQL             │
+                                              │  users, tournaments,    │
+                                              │  registrations, catches,│
+                                              │  chat_messages          │
+                                              └─────────────────────────┘
+</code></pre>
+<p>Frontend używa wyłącznie ścieżek względnych (<code>/api</code>, <code>/socket.io</code>). W środowisku DEV serwer Vite proxuje je do backendu; w produkcji robi to nginx / load balancer. Dzięki temu ten sam build działa pod dowolną domeną bez zmian w kodzie.</p>
+<h3>2.2. Model danych</h3>
+<table>
+<thead>
+<tr>
+<th>Tabela</th>
+<th>Kluczowe pola i ograniczenia</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>users</code></td>
+<td><code>email</code> UNIQUE, <code>password_hash</code>, <code>role</code> ENUM(ADMIN, JUDGE, ANGLER)</td>
+</tr>
+<tr>
+<td><code>tournaments</code></td>
+<td><code>name</code>, <code>location</code>, <code>event_date</code>, <code>max_participants</code> CHECK &gt; 0, <code>spots_per_sector</code> CHECK &gt; 0, <code>status</code> ENUM(DRAFT, OPEN, IN_PROGRESS, FINISHED), <code>created_by</code> FK</td>
+</tr>
+<tr>
+<td><code>registrations</code></td>
+<td>FK <code>tournament_id</code>, FK <code>user_id</code>, <code>sector</code>, <code>spot_number</code>; UNIQUE(tournament, user), UNIQUE(tournament, sector, spot)</td>
+</tr>
+<tr>
+<td><code>catches</code></td>
+<td>FK <code>tournament_id</code>, FK <code>user_id</code>, <code>species</code>, <code>weight_grams</code> CHECK &gt; 0, <code>registered_by</code> FK (sędzia)</td>
+</tr>
+<tr>
+<td><code>chat_messages</code></td>
+<td>FK <code>tournament_id</code>, FK <code>user_id</code>, <code>content</code> CHECK 1–1000 znaków, indeks (tournament, created_at)</td>
+</tr>
+</tbody></table>
+<p>Cykl życia zawodów (maszyna stanów egzekwowana w backendzie):
+<code>DRAFT → OPEN → IN_PROGRESS → FINISHED</code> (dodatkowo <code>OPEN → DRAFT</code> – wycofanie publikacji). Zapisy są możliwe tylko w stanie <code>OPEN</code>, rejestracja połowów tylko w <code>IN_PROGRESS</code>.</p>
+<h3>2.3. Interfejs API</h3>
+<table>
+<thead>
+<tr>
+<th>Metoda i ścieżka</th>
+<th>Dostęp</th>
+<th>Opis</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /api/auth/register</code></td>
+<td>publiczny</td>
+<td>Rejestracja konta (rola ANGLER)</td>
+</tr>
+<tr>
+<td><code>POST /api/auth/login</code></td>
+<td>publiczny</td>
+<td>Logowanie, zwraca JWT</td>
+</tr>
+<tr>
+<td><code>GET /api/tournaments</code></td>
+<td>publiczny (+opcjonalny JWT)</td>
+<td>Lista zawodów; wersje robocze widzą tylko organizatorzy; dla zalogowanego pole <code>is_registered</code></td>
+</tr>
+<tr>
+<td><code>POST /api/tournaments</code></td>
+<td>ADMIN</td>
+<td>Utworzenie zawodów (walidacja nazwy, daty, limitów)</td>
+</tr>
+<tr>
+<td><code>PATCH /api/tournaments/:id/status</code></td>
+<td>ADMIN, JUDGE</td>
+<td>Zmiana statusu zgodnie z maszyną stanów</td>
+</tr>
+<tr>
+<td><code>POST /api/registrations</code></td>
+<td>zalogowany</td>
+<td>Zapis na zawody; transakcja z blokadą <code>FOR UPDATE</code> – przydział pierwszego wolnego stanowiska, egzekwowanie limitu</td>
+</tr>
+<tr>
+<td><code>GET /api/registrations/tournament/:id</code></td>
+<td>zalogowany</td>
+<td>Lista uczestników (e-maile tylko dla organizatorów)</td>
+</tr>
+<tr>
+<td><code>POST /api/catches</code></td>
+<td>ADMIN, JUDGE</td>
+<td>Rejestracja połowu (tylko zapisany zawodnik, tylko zawody w trakcie)</td>
+</tr>
+<tr>
+<td><code>GET /api/catches/leaderboard/:id</code></td>
+<td>publiczny</td>
+<td>Ranking: <code>RANK()</code> po łącznej wadze, największej rybie, liczbie ryb</td>
+</tr>
+<tr>
+<td><code>GET /api/chat/:id?after=&lt;id&gt;</code></td>
+<td>zalogowany z dostępem</td>
+<td>Historia czatu (ostatnie 100 lub nowsze niż <code>after</code>)</td>
+</tr>
+<tr>
+<td><code>GET /health</code>, <code>GET /ready</code></td>
+<td>publiczny</td>
+<td>Health-checki (liveness / readiness z <code>SELECT 1</code>)</td>
+</tr>
+<tr>
+<td>Socket.IO <code>chat:join</code>, <code>chat:send</code>, <code>chat:message</code></td>
+<td>JWT w handshake</td>
+<td>Czat w czasie rzeczywistym, pokoje per zawody</td>
+</tr>
+</tbody></table>
+<h3>2.4. Elementy bezpieczeństwa zaimplementowane w aplikacji</h3>
+<ul>
+<li><strong>Hasła</strong>: bcrypt z solą, nigdy nie są zwracane przez API.</li>
+<li><strong>Uwierzytelnianie</strong>: JWT podpisany HS256, weryfikowany w middleware REST i w handshake Socket.IO (ten sam token dla obu kanałów).</li>
+<li><strong>Autoryzacja</strong>: middleware <code>requireRole(...)</code> na trasach modyfikujących dane; dostęp do czatu i listy uczestników sprawdzany po stronie serwera, nie tylko w UI.</li>
+<li><strong>SQL Injection</strong>: wszystkie zapytania parametryzowane (<code>$1, $2…</code>), brak konkatenacji danych użytkownika do SQL.</li>
+<li><strong>Walidacja wejścia</strong>: identyfikatory, wagi, daty i teksty walidowane w warstwie aplikacji (kody 400/404/409 zamiast 500); druga linia obrony w ograniczeniach bazy (CHECK, UNIQUE, FK).</li>
+<li><strong>Race conditions</strong>: zapisy na zawody w transakcji z blokadą wiersza; zmiana statusu z warunkiem optymistycznym.</li>
+<li><strong>Minimalizacja danych</strong>: adresy e-mail uczestników widoczne tylko dla organizatorów.</li>
+<li><strong>CORS</strong>: lista dozwolonych originów z konfiguracji, wspólna dla REST i WebSocket.</li>
+<li><strong>Kontenery</strong>: backend uruchamiany jako użytkownik nieuprzywilejowany, obrazy wieloetapowe bez zależności deweloperskich.</li>
+</ul>
+<h3>2.5. Uruchomienie w środowisku DEV</h3>
+<pre><code class="language-bash"># baza danych (Docker)
+docker run -d --name fishing_db_pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=fishing_db -p 5432:5432 postgres:16-alpine
+psql ... -f backend/db/schema.sql -f backend/db/seed.sql
+cd backend &amp;&amp; cp .env.example .env &amp;&amp; npm install &amp;&amp; node db/seedUsers.js &amp;&amp; npm run dev   # :5000
+cd frontend &amp;&amp; npm install &amp;&amp; npm run dev                                                   # :5173
+</code></pre>
+<p>Alternatywnie cały stos jedną komendą: <code>docker compose up --build -d</code> → aplikacja pod <code>http://localhost:8080</code>.</p>
+<p>Konta demo (hasło <code>haslo123</code>): <code>admin@wedkowanie.pl</code> (ADMIN), <code>sedzia@wedkowanie.pl</code> (JUDGE), <code>jan.kowalski@gmail.com</code>, <code>piotr.nowak@gmail.com</code> (ANGLER).</p>
+<h3>2.6. Scenariusz prezentacji</h3>
+<ol>
+<li>Logowanie jako <strong>Admin</strong> → Panel Admina → utworzenie zawodów z otwartymi zapisami.</li>
+<li>Logowanie jako <strong>Jan Kowalski</strong> (wędkarz) → „Zapisz się” → system przydziela sektor i stanowisko, przycisk znika, pojawia się dostęp do czatu.</li>
+<li>Czat w dwóch oknach (wędkarz + admin) – wiadomości w czasie rzeczywistym, oznaczenie „Organizator”.</li>
+<li>Admin → „Rozpocznij zawody”. <strong>Sędzia</strong> → zakładka Waga → wybór zawodów i zawodnika z listy → wpisanie wagi.</li>
+<li>Zakładka Wyniki – ranking na żywo z pozycjami (remisy ex aequo).</li>
+<li>Próby obejścia: zapis na zawody w stanie DRAFT (409), połów dla niezapisanego (409), nieprawidłowe ID (400), czat bez zapisu (403).</li>
+</ol>
+<h3>2.7. Weryfikacja</h3>
+<p>Przygotowano skrypty testowe wywołujące API (ok. 55 przypadków): walidacja wejścia, maszyna stanów, równoległe zapisy 6 użytkowników na 3 miejsca (dokładnie 3 sukcesy, unikalne stanowiska), ponowne wykorzystanie zwolnionego stanowiska, uprawnienia do e-maili, remisy w rankingu, dociąganie historii czatu. Wszystkie przeszły.</p>
+
+</body></html>

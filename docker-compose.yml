@@ -1,0 +1,66 @@
+# Lokalne odwzorowanie architektury docelowej:
+#   frontend (nginx, pełni rolę load balancera / reverse proxy) -> N x backend -> postgres + redis
+#
+#   docker compose up --build -d
+#   docker compose up -d --scale backend=3        # kilka instancji backendu (czat działa dzięki Redis)
+#   docker compose exec backend node db/seedUsers.js   # ustawia hasła kont demo (haslo123)
+#
+# Aplikacja: http://localhost:8080
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fishing_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schemat i dane startowe wgrywane automatycznie przy pierwszym starcie (pusty wolumen)
+      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./backend/db/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fishing_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fishing_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-super_secret_key_change_me}
+      # Frontend jest serwowany z tego samego origin (nginx proxuje /api), więc CORS
+      # potrzebny tylko dla dev-serwera Vite odpalanego lokalnie.
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173,http://localhost:8080}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Bez "ports" – backend dostępny tylko wewnątrz sieci compose, przez nginx.
+    # Dzięki temu można uruchomić wiele replik: --scale backend=3
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:5000
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
