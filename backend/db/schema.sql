@@ -42,3 +42,12 @@ CREATE TABLE catches (
     registered_by INT REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE chat_messages (
+                               id SERIAL PRIMARY KEY,
+                               tournament_id INT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+                               user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                               content TEXT NOT NULL CHECK (char_length(content) BETWEEN 1 AND 1000),
+                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_chat_tournament_created ON chat_messages (tournament_id, created_at);

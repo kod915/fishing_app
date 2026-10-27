@@ -1,0 +1,1278 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/
+  db/
+    schema.sql
+    seed.sql
+    seedUsers.js
+  src/
+    config/
+      db.js
+    controllers/
+      authController.js
+      catchController.js
+      chatController.js
+      registrationController.js
+      tournamentController.js
+    middleware/
+      authMiddleware.js
+    routes/
+      authRoutes.js
+      catchRoutes.js
+      chatRoutes.js
+      registrationRoutes.js
+      tournamentRoutes.js
+    services/
+      chatAccess.js
+    sockets/
+      chatSocket.js
+  .env
+  .env.example
+  package.json
+  server.js
+frontend/
+  src/
+    api/
+      client.js
+    components/
+      Admin/
+        CreateTournament.jsx
+      Auth/
+        LoginPanel.jsx
+      Chat/
+        TournamentChat.jsx
+      Judge/
+        AddCatchForm.jsx
+        Scoreboard.jsx
+      Tournaments/
+        TournamentList.jsx
+      Navbar.jsx
+    App.jsx
+    main.jsx
+  index.html
+  package.json
+.gitignore
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/db/seedUsers.js">
+// Uruchom raz: node db/seedUsers.js
+require('dotenv').config();
+const bcrypt = require('bcrypt');
+const db = require('../src/config/db');
+
+const PASSWORD = 'haslo123'; // hasło demo dla wszystkich kont
+
+const users = [
+    ['admin@wedkowanie.pl', 'Marek Admin', 'ADMIN'],
+    ['sedzia@wedkowanie.pl', 'Jan Sędzia', 'JUDGE'],
+    ['jan.kowalski@gmail.com', 'Jan Kowalski', 'ANGLER'],
+    ['piotr.nowak@gmail.com', 'Piotr Nowak', 'ANGLER'],
+];
+
+(async () => {
+    const hash = await bcrypt.hash(PASSWORD, 10);
+    for (const [email, name, role] of users) {
+        await db.query(
+            `INSERT INTO users (email, password_hash, full_name, role)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
+            [email, hash, name, role]
+        );
+    }
+    console.log(`Gotowe. Hasło dla wszystkich kont demo: ${PASSWORD}`);
+    process.exit(0);
+})();
+</file>
+
+<file path="backend/src/controllers/chatController.js">
+const db = require('../config/db');
+const { canAccessChat } = require('../services/chatAccess');
+
+exports.getHistory = async (req, res) => {
+    const tournamentId = Number(req.params.tournamentId);
+    try {
+        if (!(await canAccessChat(req.user, tournamentId))) {
+            return res.status(403).json({ message: 'Dołącz do zawodów, aby korzystać z czatu.' });
+        }
+        const result = await db.query(
+            `SELECT m.id, m.tournament_id, m.user_id, m.content, m.created_at,
+              u.full_name, u.role
+       FROM chat_messages m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.tournament_id = $1
+       ORDER BY m.id DESC
+       LIMIT 100`,
+            [tournamentId]
+        );
+        res.json(result.rows.reverse());
+    } catch (err) {
+        res.status(500).json({ message: 'Błąd pobierania wiadomości', error: err.message });
+    }
+};
+</file>
+
+<file path="backend/src/routes/chatRoutes.js">
+const express = require('express');
+const router = express.Router();
+const chatController = require('../controllers/chatController');
+const { authenticateToken } = require('../middleware/authMiddleware');
+
+router.get('/:tournamentId', authenticateToken, chatController.getHistory);
+
+module.exports = router;
+</file>
+
+<file path="backend/src/services/chatAccess.js">
+const db = require('../config/db');
+
+// Organizatorzy zawsze; wędkarz tylko jeśli zapisany na dany turniej
+exports.canAccessChat = async (user, tournamentId) => {
+    if (user.role === 'ADMIN' || user.role === 'JUDGE') return true;
+    const r = await db.query(
+        'SELECT 1 FROM registrations WHERE tournament_id = $1 AND user_id = $2',
+        [tournamentId, user.id]
+    );
+    return r.rows.length > 0;
+};
+</file>
+
+<file path="backend/src/sockets/chatSocket.js">
+const jwt = require('jsonwebtoken');
+const db = require('../config/db');
+const { canAccessChat } = require('../services/chatAccess');
+
+module.exports = (io) => {
+    // Autoryzacja połączenia tym samym JWT co REST API
+    io.use((socket, next) => {
+        const token = socket.handshake.auth && socket.handshake.auth.token;
+        if (!token) return next(new Error('Brak tokena autoryzacyjnego'));
+        jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
+            if (err) return next(new Error('Nieprawidłowy lub wygasły token'));
+            socket.user = user;
+            next();
+        });
+    });
+
+    io.on('connection', (socket) => {
+        socket.on('chat:join', async (tournamentId, ack) => {
+            try {
+                const id = Number(tournamentId);
+                if (!(await canAccessChat(socket.user, id))) {
+                    return ack && ack({ ok: false, message: 'Dołącz do zawodów, aby korzystać z czatu.' });
+                }
+                socket.join(`tournament:${id}`);
+                ack && ack({ ok: true });
+            } catch (e) {
+                ack && ack({ ok: false, message: 'Błąd dołączania do czatu' });
+            }
+        });
+
+        socket.on('chat:send', async ({ tournamentId, content } = {}, ack) => {
+            const id = Number(tournamentId);
+            const room = `tournament:${id}`;
+            const text = String(content || '').trim().slice(0, 1000);
+
+            if (!text) return ack && ack({ ok: false, message: 'Pusta wiadomość' });
+            if (!socket.rooms.has(room)) return ack && ack({ ok: false, message: 'Najpierw dołącz do czatu' });
+
+            try {
+                const r = await db.query(
+                    `INSERT INTO chat_messages (tournament_id, user_id, content)
+                     VALUES ($1, $2, $3) RETURNING id, created_at`,
+                    [id, socket.user.id, text]
+                );
+                io.to(room).emit('chat:message', {
+                    id: r.rows[0].id,
+                    tournament_id: id,
+                    user_id: socket.user.id,
+                    full_name: socket.user.full_name,
+                    role: socket.user.role,
+                    content: text,
+                    created_at: r.rows[0].created_at,
+                });
+                ack && ack({ ok: true });
+            } catch (e) {
+                ack && ack({ ok: false, message: 'Błąd zapisu wiadomości' });
+            }
+        });
+    });
+};
+</file>
+
+<file path="backend/.env">
+PORT=5000
+DATABASE_URL=postgres://postgres:admin@localhost:5432/fishing_db
+JWT_SECRET=admin
+</file>
+
+<file path="frontend/src/components/Auth/LoginPanel.jsx">
+import React, { useState } from 'react';
+import { apiRequest } from '../../api/client';
+
+const DEMO_PASSWORD = 'haslo123';
+
+export default function LoginPanel({ onLogin }) {
+    const [mode, setMode] = useState('login'); // 'login' | 'register'
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [fullName, setFullName] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const doLogin = async (mail, pass) => {
+        setError('');
+        setLoading(true);
+        try {
+            const data = await apiRequest('/auth/login', 'POST', { email: mail, password: pass });
+            localStorage.setItem('token', data.token);
+            localStorage.setItem('user', JSON.stringify(data.user));
+            onLogin(data.user);
+        } catch (e) {
+            setError(e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (mode === 'login') return doLogin(email, password);
+        try {
+            setError('');
+            await apiRequest('/auth/register', 'POST', { email, password, full_name: fullName });
+            await doLogin(email, password);
+        } catch (e) {
+            setError(e.message);
+        }
+    };
+
+    const input = { width: '100%', padding: '8px', boxSizing: 'border-box' };
+    const quickBtn = (bg) => ({
+        flex: 1, backgroundColor: bg, color: '#fff', border: 'none',
+        padding: '10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold',
+    });
+
+    return (
+        <div style={{ maxWidth: '420px', margin: '40px auto', backgroundColor: '#fff', padding: '24px', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h2 style={{ marginTop: 0 }}>🎣 {mode === 'login' ? 'Logowanie' : 'Rejestracja'}</h2>
+
+            <form onSubmit={handleSubmit}>
+                {mode === 'register' && (
+                    <div style={{ marginBottom: '12px' }}>
+                        <label style={{ display: 'block', marginBottom: '4px' }}>Imię i nazwisko:</label>
+                        <input style={input} value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+                    </div>
+                )}
+                <div style={{ marginBottom: '12px' }}>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>E-mail:</label>
+                    <input style={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                </div>
+                <div style={{ marginBottom: '12px' }}>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>Hasło:</label>
+                    <input style={input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                </div>
+
+                {error && <p style={{ color: '#dc2626' }}>{error}</p>}
+
+                <button type="submit" disabled={loading}
+                        style={{ ...quickBtn('#2563eb'), width: '100%' }}>
+                    {mode === 'login' ? 'Zaloguj się' : 'Zarejestruj się'}
+                </button>
+            </form>
+
+            <p style={{ textAlign: 'center', fontSize: '14px' }}>
+                {mode === 'login' ? 'Nie masz konta? ' : 'Masz już konto? '}
+                <a href="#" onClick={(e) => { e.preventDefault(); setError(''); setMode(mode === 'login' ? 'register' : 'login'); }}>
+                    {mode === 'login' ? 'Zarejestruj się' : 'Zaloguj się'}
+                </a>
+            </p>
+
+            <hr style={{ margin: '16px 0' }} />
+            <p style={{ fontSize: '13px', color: '#64748b', margin: '0 0 8px' }}>Szybkie logowanie (konta demo):</p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+                <button style={quickBtn('#10b981')} disabled={loading}
+                        onClick={() => doLogin('jan.kowalski@gmail.com', DEMO_PASSWORD)}>
+                    👤 Jan Kowalski (wędkarz)
+                </button>
+                <button style={quickBtn('#7c3aed')} disabled={loading}
+                        onClick={() => doLogin('admin@wedkowanie.pl', DEMO_PASSWORD)}>
+                    ⚙️ Admin
+                </button>
+            </div>
+        </div>
+    );
+}
+</file>
+
+<file path="frontend/src/components/Chat/TournamentChat.jsx">
+import React, { useEffect, useRef, useState } from 'react';
+import { io } from 'socket.io-client';
+import { apiRequest } from '../../api/client';
+
+const SOCKET_URL = 'http://localhost:5000';
+
+// scala listy wiadomości bez duplikatów (po id)
+const mergeById = (a, b) => {
+    const map = new Map();
+    [...a, ...b].forEach((m) => map.set(m.id, m));
+    return [...map.values()].sort((x, y) => x.id - y.id);
+};
+
+export default function TournamentChat({ tournament, user }) {
+    const [messages, setMessages] = useState([]);
+    const [text, setText] = useState('');
+    const [error, setError] = useState('');
+    const [connected, setConnected] = useState(false);
+    const socketRef = useRef(null);
+    const bottomRef = useRef(null);
+
+    useEffect(() => {
+        if (!tournament) return;
+        let cancelled = false;
+        setMessages([]);
+        setError('');
+
+        // 1. historia z REST
+        apiRequest(`/chat/${tournament.id}`)
+            .then((history) => { if (!cancelled) setMessages((prev) => mergeById(history, prev)); })
+            .catch((e) => { if (!cancelled) setError(e.message); });
+
+        // 2. połączenie w czasie rzeczywistym
+        const socket = io(SOCKET_URL, { auth: { token: localStorage.getItem('token') } });
+        socketRef.current = socket;
+
+        socket.on('connect', () => {
+            socket.emit('chat:join', tournament.id, (res) => {
+                if (res && res.ok) setConnected(true);
+                else setError((res && res.message) || 'Nie udało się dołączyć do czatu');
+            });
+        });
+        socket.on('disconnect', () => setConnected(false));
+        socket.on('connect_error', (e) => setError(e.message));
+        socket.on('chat:message', (msg) => {
+            if (msg.tournament_id === tournament.id) setMessages((prev) => mergeById(prev, [msg]));
+        });
+
+        return () => { cancelled = true; socket.disconnect(); };
+    }, [tournament?.id]);
+
+    useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    const send = (e) => {
+        e.preventDefault();
+        const content = text.trim();
+        if (!content || !socketRef.current) return;
+        socketRef.current.emit('chat:send', { tournamentId: tournament.id, content }, (res) => {
+            if (res && !res.ok) setError(res.message);
+        });
+        setText('');
+    };
+
+    const isOrganizer = (role) => role === 'ADMIN' || role === 'JUDGE';
+
+    return (
+        <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', maxWidth: '700px' }}>
+            <h2 style={{ marginTop: 0 }}>
+                💬 Czat: {tournament.name}{' '}
+                <span style={{ fontSize: '12px', color: connected ? '#10b981' : '#94a3b8' }}>
+          ● {connected ? 'połączono' : 'łączenie...'}
+        </span>
+            </h2>
+
+            {error && <p style={{ color: '#dc2626' }}>{error}</p>}
+
+            <div style={{ height: '350px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '10px', backgroundColor: '#f8fafc' }}>
+                {messages.length === 0 && !error && <p style={{ color: '#94a3b8' }}>Brak wiadomości. Napisz pierwszą!</p>}
+                {messages.map((m) => {
+                    const mine = m.user_id === user.id;
+                    return (
+                        <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', marginBottom: '8px' }}>
+                            <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: '8px', backgroundColor: mine ? '#2563eb' : '#e2e8f0', color: mine ? '#fff' : '#1e293b' }}>
+                                <div style={{ fontSize: '12px', opacity: 0.8, marginBottom: '2px' }}>
+                                    <strong>{m.full_name}</strong>
+                                    {isOrganizer(m.role) && (
+                                        <span style={{ marginLeft: '6px', backgroundColor: '#f59e0b', color: '#fff', borderRadius: '4px', padding: '0 5px' }}>Organizator</span>
+                                    )}
+                                    <span style={{ marginLeft: '8px' }}>
+                    {new Date(m.created_at).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                                </div>
+                                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</div>
+                            </div>
+                        </div>
+                    );
+                })}
+                <div ref={bottomRef} />
+            </div>
+
+            <form onSubmit={send} style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                <input
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    maxLength={1000}
+                    placeholder="Napisz wiadomość..."
+                    disabled={!connected}
+                    style={{ flex: 1, padding: '10px' }}
+                />
+                <button type="submit" disabled={!connected}
+                        style={{ backgroundColor: '#2563eb', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '4px', cursor: 'pointer' }}>
+                    Wyślij
+                </button>
+            </form>
+        </div>
+    );
+}
+</file>
+
+<file path="backend/src/controllers/authController.js">
+const db = require('../config/db');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+exports.register = async (req, res) => {
+  const { email, password, full_name } = req.body;
+  try {
+    const userExists = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (userExists.rows.length > 0) {
+      return res.status(400).json({ message: 'Użytkownik o podanym e-mailu już istnieje.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userRole = 'ANGLER';
+
+    const result = await db.query(
+      'INSERT INTO users (email, password_hash, full_name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, full_name, role',
+      [email, hashedPassword, full_name, userRole]
+    );
+
+    res.status(201).json({ message: 'Zarejestrowano pomyślnie', user: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd serwera', error: err.message });
+  }
+};
+
+exports.login = async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: 'Nieprawidłowy email lub hasło' });
+    }
+
+    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) {
+      return res.status(400).json({ message: 'Nieprawidłowy email lub hasło' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, full_name: user.full_name },
+      process.env.JWT_SECRET || 'super_secret_key_change_me',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      token,
+      user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role }
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd serwera', error: err.message });
+  }
+};
+</file>
+
+<file path="backend/src/controllers/registrationController.js">
+const db = require('../config/db');
+
+exports.registerUser = async (req, res) => {
+  const { tournament_id } = req.body;
+  const user_id = req.user.id;
+
+  try {
+    // Sprawdź ile osób już się zapisało, aby wyznaczyć sektor i stanowisko
+    const countRes = await db.query('SELECT COUNT(*)::int as count FROM registrations WHERE tournament_id = $1', [tournament_id]);
+    const currentCount = countRes.rows[0].count;
+
+    const sectorLetter = String.fromCharCode(65 + Math.floor(currentCount / 10)); // Sektor A, B, C...
+    const sector = `Sektor ${sectorLetter}`;
+    const spot_number = (currentCount % 10) + 1;
+
+    const result = await db.query(
+      `INSERT INTO registrations (tournament_id, user_id, sector, spot_number)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [tournament_id, user_id, sector, spot_number]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ message: 'Jesteś już zapisany na te zawody.' });
+    }
+    res.status(500).json({ message: 'Błąd rejestracji na zawody', error: err.message });
+  }
+};
+
+exports.getByTournament = async (req, res) => {
+  const { tournamentId } = req.params;
+  try {
+    const result = await db.query(
+      `SELECT r.*, u.full_name, u.email 
+       FROM registrations r
+       JOIN users u ON r.user_id = u.id
+       WHERE r.tournament_id = $1
+       ORDER BY r.sector, r.spot_number`,
+      [tournamentId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd pobierania rejestracji', error: err.message });
+  }
+};
+</file>
+
+<file path="backend/src/controllers/tournamentController.js">
+const db = require('../config/db');
+
+exports.getAll = async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT t.*, COUNT(r.id)::int AS registered_count
+      FROM tournaments t
+      LEFT JOIN registrations r ON t.id = r.tournament_id
+      GROUP BY t.id
+      ORDER BY t.event_date DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd pobierania zawodów', error: err.message });
+  }
+};
+
+exports.create = async (req, res) => {
+  const { name, location, event_date, max_participants } = req.body;
+  try {
+    const result = await db.query(
+      `INSERT INTO tournaments (name, location, event_date, max_participants, created_by) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name, location, event_date, max_participants || 30, req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd tworzenia zawodów', error: err.message });
+  }
+};
+
+exports.updateStatus = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  try {
+    const result = await db.query(
+      `UPDATE tournaments SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd aktualizacji statusu', error: err.message });
+  }
+};
+</file>
+
+<file path="backend/src/routes/authRoutes.js">
+const express = require('express');
+const router = express.Router();
+const authController = require('../controllers/authController');
+
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+
+module.exports = router;
+</file>
+
+<file path="backend/src/routes/catchRoutes.js">
+const express = require('express');
+const router = express.Router();
+const catchController = require('../controllers/catchController');
+const { authenticateToken, requireRole } = require('../middleware/authMiddleware');
+
+router.post('/', authenticateToken, requireRole('ADMIN', 'JUDGE'), catchController.addCatch);
+router.get('/leaderboard/:tournamentId', catchController.getLeaderboard);
+
+module.exports = router;
+</file>
+
+<file path="backend/src/routes/registrationRoutes.js">
+const express = require('express');
+const router = express.Router();
+const registrationController = require('../controllers/registrationController');
+const { authenticateToken } = require('../middleware/authMiddleware');
+
+router.post('/', authenticateToken, registrationController.registerUser);
+router.get('/tournament/:tournamentId', authenticateToken, registrationController.getByTournament);
+
+module.exports = router;
+</file>
+
+<file path="backend/src/routes/tournamentRoutes.js">
+const express = require('express');
+const router = express.Router();
+const tournamentController = require('../controllers/tournamentController');
+const { authenticateToken, requireRole } = require('../middleware/authMiddleware');
+
+router.get('/', tournamentController.getAll);
+router.post('/', authenticateToken, requireRole('ADMIN'), tournamentController.create);
+router.patch('/:id/status', authenticateToken, requireRole('ADMIN', 'JUDGE'), tournamentController.updateStatus);
+
+module.exports = router;
+</file>
+
+<file path="backend/.env.example">
+PORT=5000
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/fishing_db
+JWT_SECRET=super_secret_key_change_me
+</file>
+
+<file path="backend/package.json">
+{
+  "name": "fishing-app-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.5",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
+</file>
+
+<file path="frontend/src/components/Admin/CreateTournament.jsx">
+import React, { useState } from 'react';
+
+export default function CreateTournament() {
+  const [name, setName] = useState('');
+  const [location, setLocation] = useState('');
+  const [date, setDate] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    alert(`Utworzono turniej: ${name}`);
+    setName(''); setLocation(''); setDate('');
+  };
+
+  return (
+    <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', maxWidth: '500px' }}>
+      <h2>⚙️ Admin: Stwórz Nowy Turniej</h2>
+      <form onSubmit={handleSubmit}>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>Nazwa Zawodów:</label>
+          <input type="text" value={name} onChange={e => setName(e.target.value)} required style={{ width: '100%', padding: '8px' }} />
+        </div>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>Lokalizacja:</label>
+          <input type="text" value={location} onChange={e => setLocation(e.target.value)} required style={{ width: '100%', padding: '8px' }} />
+        </div>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>Data:</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} required style={{ width: '100%', padding: '8px' }} />
+        </div>
+        <button type="submit" style={{ backgroundColor: '#059669', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '4px', cursor: 'pointer' }}>Opublikuj Zawody</button>
+      </form>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/Judge/AddCatchForm.jsx">
+import React, { useState } from 'react';
+
+export default function AddCatchForm({ tournament }) {
+  const [userId, setUserId] = useState('');
+  const [species, setSpecies] = useState('Karp');
+  const [weight, setWeight] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    alert(`Dodano połów: ${species}, ${weight}g dla zawodnika ID ${userId}`);
+    setWeight('');
+  };
+
+  return (
+    <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', maxWidth: '500px' }}>
+      <h2>⚖️ Sędzia: Wprowadź Połów</h2>
+      <form onSubmit={handleSubmit}>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>ID Zawodnika:</label>
+          <input type="number" value={userId} onChange={e => setUserId(e.target.value)} required style={{ width: '100%', padding: '8px' }} />
+        </div>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>Gatunek Ryby:</label>
+          <select value={species} onChange={e => setSpecies(e.target.value)} style={{ width: '100%', padding: '8px' }}>
+            <option value="Karp">Karp</option>
+            <option value="Leszcz">Leszcz</option>
+            <option value="Płoć">Płoć</option>
+            <option value="Amur">Amur</option>
+            <option value="Inne">Inne</option>
+          </select>
+        </div>
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ display: 'block', marginBottom: '4px' }}>Waga (w gramach):</label>
+          <input type="number" value={weight} onChange={e => setWeight(e.target.value)} placeholder="np. 2500" required style={{ width: '100%', padding: '8px' }} />
+        </div>
+        <button type="submit" style={{ backgroundColor: '#2563eb', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '4px', cursor: 'pointer' }}>Zapisz Połów w Bazie</button>
+      </form>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/Tournaments/TournamentList.jsx">
+import React, { useEffect, useState } from 'react';
+import { apiRequest } from '../../api/client';
+
+export default function TournamentList({ user, onSelectTournament, onOpenChat }) {
+    const [tournaments, setTournaments] = useState([]);
+    const [error, setError] = useState('');
+
+    const load = () =>
+        apiRequest('/tournaments').then(setTournaments).catch((e) => setError(e.message));
+
+    useEffect(() => { load(); }, []);
+
+    const register = async (t) => {
+        try {
+            setError('');
+            await apiRequest('/registrations', 'POST', { tournament_id: t.id });
+            await load();
+            onOpenChat(t); // po zapisie od razu wchodzimy do czatu
+        } catch (e) {
+            setError(e.message); // np. "Jesteś już zapisany na te zawody."
+        }
+    };
+
+    const btn = (bg) => ({ backgroundColor: bg, color: '#fff', border: 'none', padding: '8px 14px', borderRadius: '4px', cursor: 'pointer', marginRight: '8px' });
+
+    return (
+        <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+            <h2>Dostępne Turnieje Wędkarskie</h2>
+            {error && <p style={{ color: '#dc2626' }}>{error}</p>}
+            <div style={{ display: 'grid', gap: '15px', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                {tournaments.map((t) => (
+                    <div key={t.id} style={{ border: '1px solid #cbd5e1', borderRadius: '6px', padding: '15px' }}>
+                        <h3 style={{ marginTop: 0 }}>{t.name}</h3>
+                        <p>📍 <strong>Lokalizacja:</strong> {t.location}</p>
+                        <p>📅 <strong>Data:</strong> {new Date(t.event_date).toLocaleDateString('pl-PL')}</p>
+                        <p>👥 <strong>Miejsca:</strong> {t.registered_count} / {t.max_participants}</p>
+                        <button style={btn('#10b981')} onClick={() => onSelectTournament(t)}>Wyniki</button>
+                        {user.role === 'ANGLER' && t.status === 'OPEN' && (
+                            <button style={btn('#2563eb')} onClick={() => register(t)}>Zapisz się</button>
+                        )}
+                        <button style={btn('#7c3aed')} onClick={() => onOpenChat(t)}>💬 Czat</button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+</file>
+
+<file path="frontend/src/components/Navbar.jsx">
+import React from 'react';
+
+export default function Navbar({ activeTab, setActiveTab, userRole }) {
+  const navBtnStyle = (tab) => ({
+    padding: '10px 16px',
+    marginRight: '8px',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    backgroundColor: activeTab === tab ? '#2563eb' : '#e2e8f0',
+    color: activeTab === tab ? '#ffffff' : '#334155'
+  });
+
+  return (
+    <nav style={{ display: 'flex', gap: '8px' }}>
+      <button style={navBtnStyle('tournaments')} onClick={() => setActiveTab('tournaments')}>📅 Turnieje</button>
+      <button style={navBtnStyle('chat')} onClick={() => setActiveTab('chat')}>💬 Czat</button>
+      <button style={navBtnStyle('scoreboard')} onClick={() => setActiveTab('scoreboard')}>🏆 Tabela Wyników (Live)</button>
+      {userRole !== 'ANGLER' && (
+        <button style={navBtnStyle('add-catch')} onClick={() => setActiveTab('add-catch')}>⚖️ Sędzia (Waga)</button>
+      )}
+      {userRole === 'ADMIN' && (
+        <button style={navBtnStyle('admin')} onClick={() => setActiveTab('admin')}>⚙️ Panel Admina</button>
+      )}
+    </nav>
+  );
+}
+</file>
+
+<file path="frontend/src/App.jsx">
+import React, { useState } from 'react';
+import Navbar from './components/Navbar';
+import TournamentList from './components/Tournaments/TournamentList';
+import Scoreboard from './components/Judge/Scoreboard';
+import CreateTournament from './components/Admin/CreateTournament';
+import AddCatchForm from './components/Judge/AddCatchForm';
+import LoginPanel from './components/Auth/LoginPanel';
+import TournamentChat from './components/Chat/TournamentChat';
+
+// Wczytaj sesję z localStorage (jeśli token nie wygasł)
+function loadSession() {
+    try {
+        const token = localStorage.getItem('token');
+        const user = JSON.parse(localStorage.getItem('user'));
+        if (!token || !user) return null;
+        const { exp } = JSON.parse(atob(token.split('.')[1]));
+        if (exp * 1000 < Date.now()) return null;
+        return user;
+    } catch {
+        return null;
+    }
+}
+
+export default function App() {
+    const [user, setUser] = useState(loadSession);
+    const [activeTab, setActiveTab] = useState('tournaments');
+    const [selectedTournament, setSelectedTournament] = useState(null);
+
+    const logout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+        setSelectedTournament(null);
+        setActiveTab('tournaments');
+    };
+
+    if (!user) {
+        return (
+            <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', padding: '20px' }}>
+                <LoginPanel onLogin={setUser} />
+            </div>
+        );
+    }
+
+    const roleLabel = { ADMIN: 'Administrator', JUDGE: 'Sędzia', ANGLER: 'Wędkarz' }[user.role];
+
+    return (
+        <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', padding: '20px' }}>
+            <header style={{ backgroundColor: '#1e293b', color: '#fff', padding: '15px 20px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                    <h1 style={{ margin: 0, fontSize: '22px' }}>🎣 Fishing Manager</h1>
+                    <p style={{ margin: '5px 0 0 0', color: '#94a3b8', fontSize: '14px' }}>Aplikacja do obsługi i rezerwacji stanowisk na zawodach wędkarskich</p>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: '14px' }}>
+                    <div>👤 {user.full_name} <span style={{ color: '#94a3b8' }}>({roleLabel})</span></div>
+                    <button onClick={logout} style={{ marginTop: '6px', background: '#ef4444', color: '#fff', border: 'none', padding: '5px 12px', borderRadius: '4px', cursor: 'pointer' }}>
+                        Wyloguj
+                    </button>
+                </div>
+            </header>
+
+            <Navbar activeTab={activeTab} setActiveTab={setActiveTab} userRole={user.role} />
+
+            <main style={{ marginTop: '20px' }}>
+                {activeTab === 'tournaments' && (
+                    <TournamentList
+                        user={user}
+                        onSelectTournament={(t) => { setSelectedTournament(t); setActiveTab('scoreboard'); }}
+                        onOpenChat={(t) => { setSelectedTournament(t); setActiveTab('chat'); }}
+                    />
+                )}
+
+                {activeTab === 'scoreboard' && <Scoreboard tournament={selectedTournament} />}
+
+                {activeTab === 'chat' && (
+                    selectedTournament
+                        ? <TournamentChat tournament={selectedTournament} user={user} />
+                        : <p>Wybierz turniej na liście, aby wejść do czatu.</p>
+                )}
+
+                {activeTab === 'add-catch' && user.role !== 'ANGLER' && <AddCatchForm tournament={selectedTournament} />}
+                {activeTab === 'admin' && user.role === 'ADMIN' && <CreateTournament />}
+            </main>
+        </div>
+    );
+}
+</file>
+
+<file path="frontend/src/main.jsx">
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+</file>
+
+<file path="frontend/index.html">
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zawody Wędkarskie</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+</file>
+
+<file path=".gitignore">
+backend/node_modules
+frontend/node_modules
+</file>
+
+<file path="backend/db/schema.sql">
+-- Postgres Database Schema for Fishing Competition App
+
+CREATE TYPE user_role AS ENUM ('ADMIN', 'JUDGE', 'ANGLER');
+CREATE TYPE tournament_status AS ENUM ('DRAFT', 'OPEN', 'IN_PROGRESS', 'FINISHED');
+
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(100) NOT NULL,
+    role user_role DEFAULT 'ANGLER',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tournaments (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    location VARCHAR(255) NOT NULL,
+    event_date DATE NOT NULL,
+    max_participants INT DEFAULT 30,
+    status tournament_status DEFAULT 'OPEN',
+    created_by INT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE registrations (
+    id SERIAL PRIMARY KEY,
+    tournament_id INT REFERENCES tournaments(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    sector VARCHAR(10),
+    spot_number INT,
+    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_user_tournament UNIQUE (tournament_id, user_id)
+);
+
+CREATE TABLE catches (
+    id SERIAL PRIMARY KEY,
+    tournament_id INT REFERENCES tournaments(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    species VARCHAR(100) NOT NULL,
+    weight_grams INT NOT NULL CHECK (weight_grams > 0),
+    registered_by INT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE chat_messages (
+                               id SERIAL PRIMARY KEY,
+                               tournament_id INT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+                               user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                               content TEXT NOT NULL CHECK (char_length(content) BETWEEN 1 AND 1000),
+                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_chat_tournament_created ON chat_messages (tournament_id, created_at);
+</file>
+
+<file path="backend/db/seed.sql">
+-- Sample Data
+INSERT INTO users (email, password_hash, full_name, role) VALUES
+('admin@wedkowanie.pl', 'hash_pass_123', 'Marek Admin', 'ADMIN'),
+('sedzia@wedkowanie.pl', 'hash_pass_123', 'Jan Sędzia', 'JUDGE'),
+('jan.kowalski@gmail.com', 'hash_pass_123', 'Jan Kowalski', 'ANGLER'),
+('piotr.nowak@gmail.com', 'hash_pass_123', 'Piotr Nowak', 'ANGLER');
+
+INSERT INTO tournaments (name, location, event_date, max_participants, status, created_by) VALUES
+('Puchar Wisły 2026', 'Tczew, Sektor A-C', '2026-06-15', 30, 'OPEN', 1),
+('Mistrzostwa Wielkopolski', 'Jezioro Kierskie', '2026-07-20', 20, 'DRAFT', 1);
+
+INSERT INTO registrations (tournament_id, user_id, sector, spot_number) VALUES
+(1, 3, 'Sektor A', 4),
+(1, 4, 'Sektor A', 5);
+</file>
+
+<file path="backend/src/config/db.js">
+const { Pool } = require('pg');
+require('dotenv').config();
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/fishing_db'
+});
+
+pool.on('connect', () => {
+  console.log('Połączono z bazą danych PostgreSQL');
+});
+
+module.exports = {
+  query: (text, params) => pool.query(text, params),
+};
+</file>
+
+<file path="backend/src/controllers/catchController.js">
+const db = require('../config/db');
+
+exports.addCatch = async (req, res) => {
+  const { tournament_id, user_id, species, weight_grams } = req.body;
+  const registered_by = req.user.id;
+
+  try {
+    const result = await db.query(
+      `INSERT INTO catches (tournament_id, user_id, species, weight_grams, registered_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [tournament_id, user_id, species, weight_grams, registered_by]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd dodawania połowu', error: err.message });
+  }
+};
+
+exports.getLeaderboard = async (req, res) => {
+  const { tournamentId } = req.params;
+  try {
+    const query = `
+      SELECT 
+        u.id AS user_id,
+        u.full_name,
+        r.sector,
+        r.spot_number,
+        COALESCE(SUM(c.weight_grams), 0)::int AS total_weight,
+        COUNT(c.id)::int AS fish_count,
+        COALESCE(MAX(c.weight_grams), 0)::int AS biggest_fish
+      FROM registrations r
+      JOIN users u ON r.user_id = u.id
+      LEFT JOIN catches c ON c.tournament_id = r.tournament_id AND c.user_id = r.user_id
+      WHERE r.tournament_id = $1
+      GROUP BY u.id, u.full_name, r.sector, r.spot_number
+      ORDER BY total_weight DESC, biggest_fish DESC;
+    `;
+    const result = await db.query(query, [tournamentId]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Błąd pobierania wyników', error: err.message });
+  }
+};
+</file>
+
+<file path="backend/src/middleware/authMiddleware.js">
+const jwt = require('jsonwebtoken');
+
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) return res.status(401).json({ message: 'Brak tokena autoryzacyjnego' });
+
+  jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
+    if (err) return res.status(403).json({ message: 'Nieprawidłowy lub wygasły token' });
+    req.user = user;
+    next();
+  });
+};
+
+const requireRole = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Brak uprawnień do wykonania tej operacji' });
+    }
+    next();
+  };
+};
+
+module.exports = { authenticateToken, requireRole };
+</file>
+
+<file path="backend/server.js">
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const { Server } = require('socket.io');
+require('dotenv').config();
+
+const authRoutes = require('./src/routes/authRoutes');
+const tournamentRoutes = require('./src/routes/tournamentRoutes');
+const registrationRoutes = require('./src/routes/registrationRoutes');
+const catchRoutes = require('./src/routes/catchRoutes');
+const chatRoutes = require('./src/routes/chatRoutes');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(cors());
+app.use(express.json());
+
+// Trasy API
+app.use('/api/auth', authRoutes);
+app.use('/api/tournaments', tournamentRoutes);
+app.use('/api/registrations', registrationRoutes);
+app.use('/api/catches', catchRoutes);
+app.use('/api/chat', chatRoutes);
+
+app.get('/', (req, res) => {
+  res.send('API Aplikacji do Zarządzania Zawodami Wędkarskimi działa poprawnie.');
+});
+
+// Socket.IO działa na tym samym serwerze HTTP co Express
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: 'http://localhost:5173' } });
+require('./src/sockets/chatSocket')(io);
+
+server.listen(PORT, () => {
+  console.log(`Serwer uruchomiony na porcie ${PORT}`);
+});
+</file>
+
+<file path="frontend/src/api/client.js">
+const API_BASE = 'http://localhost:5000/api';
+
+export const apiRequest = async (endpoint, method = 'GET', body = null) => {
+  const token = localStorage.getItem('token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const config = {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : null,
+  };
+
+  const response = await fetch(`${API_BASE}${endpoint}`, config);
+  const data = await response.json();
+  
+  if (!response.ok) {
+    throw new Error(data.message || 'Wystąpił błąd podczas połączenia z serwerem');
+  }
+  return data;
+};
+</file>
+
+<file path="frontend/src/components/Judge/Scoreboard.jsx">
+import React from 'react';
+
+export default function Scoreboard({ tournament }) {
+  const demoScores = [
+    { rank: 1, full_name: 'Jan Kowalski', sector: 'Sektor A', spot_number: 4, total_weight: 12450, fish_count: 8, biggest_fish: 3200 },
+    { rank: 2, full_name: 'Piotr Nowak', sector: 'Sektor A', spot_number: 5, total_weight: 8900, fish_count: 5, biggest_fish: 2100 }
+  ];
+
+  return (
+    <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px' }}>
+      <h2>🏆 Wyniki na Żywo {tournament ? `- ${tournament.name}` : ''}</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '10px' }}>
+        <thead>
+          <tr style={{ backgroundColor: '#f1f5f9', textAlign: 'left' }}>
+            <th style={{ padding: '10px' }}>Pozycja</th>
+            <th style={{ padding: '10px' }}>Zawodnik</th>
+            <th style={{ padding: '10px' }}>Sektor / Stanowisko</th>
+            <th style={{ padding: '10px' }}>Ilość Ryb</th>
+            <th style={{ padding: '10px' }}>Największa Ryba</th>
+            <th style={{ padding: '10px' }}>Łączna Waga (g)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {demoScores.map(s => (
+            <tr key={s.rank} style={{ borderBottom: '1px solid #e2e8f0' }}>
+              <td style={{ padding: '10px', fontWeight: 'bold' }}>#{s.rank}</td>
+              <td style={{ padding: '10px' }}>{s.full_name}</td>
+              <td style={{ padding: '10px' }}>{s.sector} / St. {s.spot_number}</td>
+              <td style={{ padding: '10px' }}>{s.fish_count} szt.</td>
+              <td style={{ padding: '10px' }}>{s.biggest_fish} g</td>
+              <td style={{ padding: '10px', fontWeight: 'bold', color: '#2563eb' }}>{s.total_weight} g</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "fishing-app-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.6"
+  }
+}
+</file>
+
+</files>

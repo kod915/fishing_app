@@ -15,6 +15,7 @@ export default function Navbar({ activeTab, setActiveTab, userRole }) {
   return (
     <nav style={{ display: 'flex', gap: '8px' }}>
       <button style={navBtnStyle('tournaments')} onClick={() => setActiveTab('tournaments')}>📅 Turnieje</button>
+      <button style={navBtnStyle('chat')} onClick={() => setActiveTab('chat')}>💬 Czat</button>
       <button style={navBtnStyle('scoreboard')} onClick={() => setActiveTab('scoreboard')}>🏆 Tabela Wyników (Live)</button>
       {userRole !== 'ANGLER' && (
         <button style={navBtnStyle('add-catch')} onClick={() => setActiveTab('add-catch')}>⚖️ Sędzia (Waga)</button>
