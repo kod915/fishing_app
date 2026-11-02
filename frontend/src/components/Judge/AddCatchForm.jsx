@@ -16,6 +16,9 @@ export default function AddCatchForm({ tournament }) {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
+  const [catches, setCatches] = useState([]);
+  const [editId, setEditId] = useState(null);
+  const [editWeight, setEditWeight] = useState('');
 
   // Lista zawodów (sędzia/admin widzi też wersje robocze)
   useEffect(() => {
@@ -27,14 +30,17 @@ export default function AddCatchForm({ tournament }) {
     if (tournament) setTournamentId(String(tournament.id));
   }, [tournament?.id]);
 
-  // Uczestnicy wybranego turnieju
+  const loadCatches = (id) => apiRequest(`/catches/tournament/${id}`).then(setCatches);
+
+  // Uczestnicy i połowy wybranego turnieju
   useEffect(() => {
-    setParticipants([]); setUserId('');
+    setParticipants([]); setUserId(''); setCatches([]); setEditId(null);
     if (!tournamentId) return;
     let cancelled = false;
     apiRequest(`/registrations/tournament/${tournamentId}`)
       .then((rows) => { if (!cancelled) setParticipants(rows); })
       .catch((e) => { if (!cancelled) setError(e.message); });
+    loadCatches(tournamentId).catch((e) => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [tournamentId]);
 
@@ -55,6 +61,7 @@ export default function AddCatchForm({ tournament }) {
       const who = participants.find((p) => p.user_id === c.user_id);
       setInfo(`Zapisano: ${c.species}, ${c.weight_grams} g dla ${who ? who.full_name : `zawodnika #${c.user_id}`} (${selected.name}).`);
       setWeight('');
+      await loadCatches(tournamentId);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -121,6 +128,69 @@ export default function AddCatchForm({ tournament }) {
           {loading ? 'Zapisywanie...' : 'Zapisz Połów w Bazie'}
         </button>
       </form>
+
+      {tournamentId && (
+        <div style={{ marginTop: '24px' }}>
+          <h3 style={{ margin: '0 0 8px' }}>Zarejestrowane połowy</h3>
+          {catches.length === 0 ? (
+            <p style={{ color: '#64748b', fontSize: '14px' }}>Brak połowów.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>
+                  <th style={{ padding: '6px' }}>Zawodnik</th>
+                  <th style={{ padding: '6px' }}>Gatunek</th>
+                  <th style={{ padding: '6px' }}>Waga</th>
+                  <th style={{ padding: '6px' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {catches.map((c) => (
+                  <tr key={c.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '6px' }}>{c.full_name}</td>
+                    <td style={{ padding: '6px' }}>{c.species}</td>
+                    <td style={{ padding: '6px' }}>
+                      {editId === c.id ? (
+                        <input type="number" min={1} max={200000} value={editWeight}
+                               onChange={(e) => setEditWeight(e.target.value)}
+                               style={{ width: '90px', padding: '4px' }} />
+                      ) : `${c.weight_grams} g`}
+                    </td>
+                    <td style={{ padding: '6px', whiteSpace: 'nowrap' }}>
+                      {editId === c.id ? (
+                        <>
+                          <button type="button" onClick={async () => {
+                            try {
+                              await apiRequest(`/catches/${c.id}`, 'PATCH', { weight_grams: Number(editWeight) });
+                              setEditId(null);
+                              setInfo('Poprawiono wagę.');
+                              await loadCatches(tournamentId);
+                            } catch (e) { setError(e.message); }
+                          }} style={{ marginRight: '6px' }}>Zapisz</button>
+                          <button type="button" onClick={() => setEditId(null)}>Anuluj</button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => { setEditId(c.id); setEditWeight(String(c.weight_grams)); setError(''); }}
+                                  style={{ marginRight: '6px' }}>Popraw</button>
+                          <button type="button" onClick={async () => {
+                            if (!window.confirm('Usunąć ten połów?')) return;
+                            try {
+                              await apiRequest(`/catches/${c.id}`, 'DELETE');
+                              setInfo('Usunięto połów.');
+                              await loadCatches(tournamentId);
+                            } catch (e) { setError(e.message); }
+                          }} style={{ color: '#dc2626' }}>Usuń</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }
