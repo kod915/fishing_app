@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Navbar from './components/Navbar';
 import TournamentList from './components/Tournaments/TournamentList';
 import Scoreboard from './components/Judge/Scoreboard';
@@ -6,16 +6,13 @@ import CreateTournament from './components/Admin/CreateTournament';
 import AddCatchForm from './components/Judge/AddCatchForm';
 import LoginPanel from './components/Auth/LoginPanel';
 import TournamentChat from './components/Chat/TournamentChat';
+import { hasValidToken, tryRefresh, logoutRequest } from './api/client';
 
-// Wczytaj sesję z localStorage (jeśli token nie wygasł)
+// Użytkownik z localStorage, jeśli token jeszcze ważny
 function loadSession() {
     try {
-        const token = localStorage.getItem('token');
         const user = JSON.parse(localStorage.getItem('user'));
-        if (!token || !user) return null;
-        const { exp } = JSON.parse(atob(token.split('.')[1]));
-        if (exp * 1000 < Date.now()) return null;
-        return user;
+        return hasValidToken() && user ? user : null;
     } catch {
         return null;
     }
@@ -23,29 +20,43 @@ function loadSession() {
 
 export default function App() {
     const [user, setUser] = useState(loadSession);
+    // Gdy JWT wygasł, próbujemy przedłużyć sesję refresh tokenem (cookie) zanim pokażemy logowanie
+    const [restoring, setRestoring] = useState(() => !loadSession());
     const [activeTab, setActiveTab] = useState('tournaments');
     const [selectedTournament, setSelectedTournament] = useState(null);
 
-    const logout = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+    useEffect(() => {
+        if (!restoring) return;
+        tryRefresh().then((u) => { setUser(u); setRestoring(false); });
+    }, []);
+
+    // Backend odrzucił sesję i odświeżenie się nie udało -> wyloguj w UI
+    useEffect(() => {
+        const onLogout = () => { setUser(null); setSelectedTournament(null); setActiveTab('tournaments'); };
+        window.addEventListener('auth:logout', onLogout);
+        return () => window.removeEventListener('auth:logout', onLogout);
+    }, []);
+
+    const logout = async () => {
+        await logoutRequest();
         setUser(null);
         setSelectedTournament(null);
         setActiveTab('tournaments');
     };
 
-    if (!user) {
-        return (
-            <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', padding: '20px' }}>
-                <LoginPanel onLogin={setUser} />
-            </div>
-        );
-    }
+    const shell = (children) => (
+        <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', padding: '20px' }}>
+            {children}
+        </div>
+    );
+
+    if (restoring) return shell(<p style={{ textAlign: 'center', color: '#64748b' }}>Przywracanie sesji...</p>);
+    if (!user) return shell(<LoginPanel onLogin={setUser} />);
 
     const roleLabel = { ADMIN: 'Administrator', JUDGE: 'Sędzia', ANGLER: 'Wędkarz' }[user.role];
 
-    return (
-        <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', padding: '20px' }}>
+    return shell(
+        <>
             <header style={{ backgroundColor: '#1e293b', color: '#fff', padding: '15px 20px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                     <h1 style={{ margin: 0, fontSize: '22px' }}>🎣 Fishing Manager</h1>
@@ -81,6 +92,6 @@ export default function App() {
                 {activeTab === 'add-catch' && user.role !== 'ANGLER' && <AddCatchForm tournament={selectedTournament} />}
                 {activeTab === 'admin' && user.role === 'ADMIN' && <CreateTournament />}
             </main>
-        </div>
+        </>
     );
 }

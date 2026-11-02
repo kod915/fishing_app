@@ -1,11 +1,15 @@
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
+const { RedisStore } = require('rate-limit-redis');
 const { Server } = require('socket.io');
-require('dotenv').config();
 
+const env = require('./src/config/env');
 const db = require('./src/config/db');
-const { createSocketAdapter } = require('./src/config/redis');
+const { connectRedis, createSocketAdapter, getRedisClient, closeRedis } = require('./src/config/redis');
 
 const authRoutes = require('./src/routes/authRoutes');
 const tournamentRoutes = require('./src/routes/tournamentRoutes');
@@ -13,73 +17,121 @@ const registrationRoutes = require('./src/routes/registrationRoutes');
 const catchRoutes = require('./src/routes/catchRoutes');
 const chatRoutes = require('./src/routes/chatRoutes');
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+// Pusta lista originów = brak cross-origin (frontend za tym samym nginx / LB).
+// Nigdy nie przechodzimy na `origin: true`, które odbijałoby dowolny origin.
+const corsOptions = { origin: env.corsOrigins, credentials: true };
 
-// Lista dozwolonych originów (CSV), np. "https://aaa.domen.pl,http://localhost:5173".
-// Pusta wartość = ten sam origin (frontend serwowany zza tego samego LB / nginx).
-const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-const corsOptions = { origin: corsOrigins.length ? corsOrigins : true, credentials: true };
-
-// Za load balancerem / reverse proxy: poprawne req.ip, req.protocol, req.secure
-app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
-
-app.use(cors(corsOptions));
-app.use(express.json());
-
-// Health-checki dla load balancera / orkiestratora
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
-});
-app.get('/ready', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    res.json({ status: 'ready', db: 'ok' });
-  } catch (err) {
-    res.status(503).json({ status: 'not_ready', db: 'error' });
-  }
-});
-
-// Trasy API
-app.use('/api/auth', authRoutes);
-app.use('/api/tournaments', tournamentRoutes);
-app.use('/api/registrations', registrationRoutes);
-app.use('/api/catches', catchRoutes);
-app.use('/api/chat', chatRoutes);
-
-app.get('/', (req, res) => {
-  res.send('API Aplikacji do Zarządzania Zawodami Wędkarskimi działa poprawnie.');
-});
-
-// Socket.IO działa na tym samym serwerze HTTP co Express
-const server = http.createServer(app);
-const io = new Server(server, { cors: corsOptions });
-require('./src/sockets/chatSocket')(io);
-
-const shutdown = (signal) => {
-  console.log(`${signal} – zamykanie serwera...`);
-  io.close();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10000).unref();
+/** Store rate limitera: Redis (współdzielony między replikami) albo pamięć (dev). */
+const limiterStore = (prefix) => {
+  const client = getRedisClient();
+  return client
+    ? new RedisStore({ prefix, sendCommand: (...args) => client.sendCommand(args) })
+    : undefined;
 };
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+
+function buildApp() {
+  const app = express();
+
+  // Za load balancerem / reverse proxy: poprawne req.ip (rate limiting!), req.protocol
+  app.set('trust proxy', env.trustProxyHops);
+  app.disable('x-powered-by');
+
+  app.use(helmet());
+  app.use(cors(corsOptions));
+  app.use(express.json({ limit: '16kb' }));
+  app.use(cookieParser());
+
+  // Health-checki dla load balancera / orkiestratora (poza rate limitem)
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime() });
+  });
+  app.get('/ready', async (req, res) => {
+    const checks = {};
+    try {
+      await db.query('SELECT 1');
+      checks.db = 'ok';
+    } catch {
+      checks.db = 'error';
+    }
+    const redis = getRedisClient();
+    if (env.redisUrl) {
+      try {
+        checks.redis = redis && (await redis.ping()) === 'PONG' ? 'ok' : 'error';
+      } catch {
+        checks.redis = 'error';
+      }
+    }
+    const ready = Object.values(checks).every((v) => v === 'ok');
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', ...checks });
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs: 60_000, limit: 300, standardHeaders: 'draft-7', legacyHeaders: false,
+    store: limiterStore('rl:api:'),
+    message: { message: 'Zbyt wiele żądań. Spróbuj ponownie za chwilę.' },
+  });
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false,
+    store: limiterStore('rl:auth:'),
+    // odświeżanie sesji jest rutynowe – limitujemy tylko logowanie i rejestrację
+    skip: (req) => req.path === '/refresh' || req.path === '/logout',
+    message: { message: 'Zbyt wiele prób logowania. Spróbuj ponownie za 15 minut.' },
+  });
+
+  app.use('/api', apiLimiter);
+  app.use('/api/auth', authLimiter, authRoutes);
+  app.use('/api/tournaments', tournamentRoutes);
+  app.use('/api/registrations', registrationRoutes);
+  app.use('/api/catches', catchRoutes);
+  app.use('/api/chat', chatRoutes);
+
+  app.get('/', (req, res) => {
+    res.send('API Aplikacji do Zarządzania Zawodami Wędkarskimi działa poprawnie.');
+  });
+
+  app.use((req, res) => res.status(404).json({ message: 'Nie znaleziono.' }));
+
+  return app;
+}
 
 (async () => {
-  // Przy wielu instancjach backendu (autoscaling) wiadomości czatu są rozgłaszane
-  // przez Redis. Bez REDIS_URL działa domyślny adapter in-memory (jedna instancja).
-  const adapter = await createSocketAdapter();
+  // Redis najpierw – rate limiter i adapter Socket.IO potrzebują połączenia przy budowie aplikacji.
+  await connectRedis();
+
+  const app = buildApp();
+  const server = http.createServer(app);
+  const io = new Server(server, {
+    cors: corsOptions,
+    // Ogranicza rozmiar pojedynczej ramki – wiadomości czatu mają limit 1000 znaków
+    maxHttpBufferSize: 10_000,
+  });
+
+  const adapter = createSocketAdapter();
   if (adapter) {
     io.adapter(adapter);
     console.log('Socket.IO: adapter Redis aktywny');
   } else {
     console.log('Socket.IO: adapter in-memory (brak REDIS_URL)');
   }
+  require('./src/sockets/chatSocket')(io);
 
-  server.listen(PORT, () => {
-    console.log(`Serwer uruchomiony na porcie ${PORT}`);
+  const shutdown = (signal) => {
+    console.log(`${signal} – zamykanie serwera...`);
+    io.close();
+    server.close(async () => {
+      await closeRedis();
+      await db.pool.end().catch(() => {});
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  server.listen(env.port, () => {
+    console.log(`Serwer uruchomiony na porcie ${env.port} (${env.isProd ? 'production' : 'development'})`);
   });
-})();
+})().catch((err) => {
+  console.error('Nie udało się uruchomić serwera:', err.message);
+  process.exit(1);
+});

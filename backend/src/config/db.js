@@ -1,12 +1,28 @@
+const fs = require('fs');
 const { Pool } = require('pg');
-require('dotenv').config();
+const { databaseUrl, pgPoolMax, pgSslCa, pgSsl } = require('./env');
+
+// TLS do bazy w produkcji (Azure PostgreSQL wymusza SSL). Nie wyłączamy weryfikacji
+// certyfikatu – jeśli Node nie zna CA serwera, podaj ścieżkę do bundla w PG_SSL_CA.
+const ssl = pgSsl
+  ? { rejectUnauthorized: true, ...(pgSslCa ? { ca: fs.readFileSync(pgSslCa, 'utf8') } : {}) }
+  : false;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/fishing_db'
+  connectionString: databaseUrl,
+  ssl,
+  // replik x max musi zostać poniżej max_connections serwera
+  max: pgPoolMax,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+  statement_timeout: 10000,
 });
 
 pool.on('connect', () => {
   console.log('Połączono z bazą danych PostgreSQL');
+});
+pool.on('error', (err) => {
+  console.error('Błąd puli połączeń PostgreSQL:', err.message);
 });
 
 /**
@@ -30,6 +46,7 @@ const withTransaction = async (fn) => {
 
 module.exports = {
   query: (text, params) => pool.query(text, params),
+  getClient: () => pool.connect(),
   withTransaction,
   pool,
 };

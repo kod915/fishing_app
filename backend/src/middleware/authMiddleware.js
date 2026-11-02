@@ -1,28 +1,37 @@
 const jwt = require('jsonwebtoken');
+const { jwtSecret } = require('../config/env');
+
+// Algorytm przypięty na sztywno – zapobiega atakom typu "alg: none" / podmiana algorytmu.
+const VERIFY_OPTIONS = { algorithms: ['HS256'] };
+
+const extractToken = (req) => {
+  const authHeader = req.headers['authorization'];
+  return authHeader && authHeader.split(' ')[1];
+};
 
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
+  const token = extractToken(req);
   if (!token) return res.status(401).json({ message: 'Brak tokena autoryzacyjnego' });
 
-  jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
-    if (err) return res.status(403).json({ message: 'Nieprawidłowy lub wygasły token' });
+  jwt.verify(token, jwtSecret, VERIFY_OPTIONS, (err, user) => {
+    if (err) return res.status(401).json({ message: 'Nieprawidłowy lub wygasły token' });
     req.user = user;
     next();
   });
 };
 
-// Jak authenticateToken, ale brak/nieprawidłowy token nie blokuje żądania –
-// req.user jest wtedy undefined. Dla endpointów publicznych, które zwracają
-// więcej danych zalogowanym (np. lista turniejów z wersjami roboczymi dla organizatorów).
+// Jak authenticateToken, ale BRAK tokena nie blokuje żądania – req.user jest wtedy
+// undefined. Dla endpointów publicznych, które zwracają więcej danych zalogowanym
+// (np. lista turniejów z wersjami roboczymi dla organizatorów).
+// Token podany, ale nieprawidłowy/wygasły => 401, żeby klient odświeżył sesję,
+// zamiast po cichu dostać okrojoną odpowiedź "anonimową".
 const optionalAuth = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = extractToken(req);
   if (!token) return next();
 
-  jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
-    if (!err) req.user = user;
+  jwt.verify(token, jwtSecret, VERIFY_OPTIONS, (err, user) => {
+    if (err) return res.status(401).json({ message: 'Nieprawidłowy lub wygasły token' });
+    req.user = user;
     next();
   });
 };
@@ -36,4 +45,4 @@ const requireRole = (...roles) => {
   };
 };
 
-module.exports = { authenticateToken, optionalAuth, requireRole };
+module.exports = { authenticateToken, optionalAuth, requireRole, VERIFY_OPTIONS };

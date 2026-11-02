@@ -1,14 +1,21 @@
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
+const { jwtSecret } = require('../config/env');
+const { VERIFY_OPTIONS } = require('../middleware/authMiddleware');
 const { checkChatAccess } = require('../services/chatAccess');
 const { parsePositiveInt } = require('../utils/validation');
+
+// Limit wiadomości na jedno połączenie: 5 wiadomości w oknie 5 sekund
+const SEND_LIMIT = 5;
+const SEND_WINDOW_MS = 5000;
+const MAX_CONTENT = 1000;
 
 module.exports = (io) => {
     // Autoryzacja połączenia tym samym JWT co REST API
     io.use((socket, next) => {
         const token = socket.handshake.auth && socket.handshake.auth.token;
         if (!token) return next(new Error('Brak tokena autoryzacyjnego'));
-        jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me', (err, user) => {
+        jwt.verify(token, jwtSecret, VERIFY_OPTIONS, (err, user) => {
             if (err) return next(new Error('Nieprawidłowy lub wygasły token'));
             socket.user = user;
             next();
@@ -16,6 +23,25 @@ module.exports = (io) => {
     });
 
     io.on('connection', (socket) => {
+        // Token jest sprawdzany tylko przy połączeniu – rozłączamy, gdy wygaśnie.
+        // Klient łączy się ponownie z odświeżonym tokenem.
+        const msLeft = (socket.user.exp || 0) * 1000 - Date.now();
+        const expiryTimer = setTimeout(() => {
+            socket.emit('auth:expired');
+            socket.disconnect(true);
+        }, Math.max(msLeft, 0));
+
+        const sendTimestamps = [];
+        const isThrottled = () => {
+            const now = Date.now();
+            while (sendTimestamps.length && now - sendTimestamps[0] > SEND_WINDOW_MS) sendTimestamps.shift();
+            if (sendTimestamps.length >= SEND_LIMIT) return true;
+            sendTimestamps.push(now);
+            return false;
+        };
+
+        socket.on('disconnect', () => clearTimeout(expiryTimer));
+
         socket.on('chat:join', async (tournamentId, ack) => {
             try {
                 const id = parsePositiveInt(tournamentId);
@@ -28,6 +54,7 @@ module.exports = (io) => {
                 socket.join(`tournament:${id}`);
                 ack && ack({ ok: true });
             } catch (e) {
+                console.error('chat:join', e);
                 ack && ack({ ok: false, message: 'Błąd dołączania do czatu' });
             }
         });
@@ -36,10 +63,11 @@ module.exports = (io) => {
             const id = parsePositiveInt(tournamentId);
             if (!id) return ack && ack({ ok: false, message: 'Nieprawidłowy identyfikator zawodów.' });
             const room = `tournament:${id}`;
-            const text = String(content || '').trim().slice(0, 1000);
+            const text = String(content || '').trim().slice(0, MAX_CONTENT);
 
             if (!text) return ack && ack({ ok: false, message: 'Pusta wiadomość' });
             if (!socket.rooms.has(room)) return ack && ack({ ok: false, message: 'Najpierw dołącz do czatu' });
+            if (isThrottled()) return ack && ack({ ok: false, message: 'Za dużo wiadomości – odczekaj chwilę.' });
 
             try {
                 const r = await db.query(
@@ -58,6 +86,7 @@ module.exports = (io) => {
                 });
                 ack && ack({ ok: true });
             } catch (e) {
+                console.error('chat:send', e);
                 ack && ack({ ok: false, message: 'Błąd zapisu wiadomości' });
             }
         });

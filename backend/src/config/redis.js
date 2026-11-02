@@ -1,26 +1,48 @@
 const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-adapter');
+const { redisUrl } = require('./env');
+
+let clients = null;
 
 /**
- * Tworzy adapter Socket.IO oparty o Redis pub/sub, jeśli ustawiono REDIS_URL.
- * Dzięki niemu `io.to(room).emit()` dociera do klientów podłączonych do
- * dowolnej instancji backendu, a nie tylko do tej, która wysłała wiadomość.
- * Zwraca null, gdy REDIS_URL nie jest ustawione (tryb pojedynczej instancji).
+ * Łączy się z Redis, jeśli ustawiono REDIS_URL. Tworzy trzy połączenia:
+ * pub/sub dla adaptera Socket.IO (wymagane przez protokół – klient w trybie
+ * subscribe nie może wykonywać innych komend) i ogólne dla rate limitera.
+ * Zwraca null, gdy Redis nie jest skonfigurowany (tryb pojedynczej instancji).
  */
-async function createSocketAdapter() {
-  const url = process.env.REDIS_URL;
-  if (!url) return null;
+async function connectRedis() {
+  if (!redisUrl) return null;
+  if (clients) return clients;
 
-  const pubClient = createClient({ url });
-  const subClient = pubClient.duplicate();
+  const pub = createClient({ url: redisUrl });
+  const sub = pub.duplicate();
+  const client = pub.duplicate();
 
-  pubClient.on('error', (err) => console.error('Redis (pub):', err.message));
-  subClient.on('error', (err) => console.error('Redis (sub):', err.message));
+  for (const [name, c] of [['pub', pub], ['sub', sub], ['client', client]]) {
+    c.on('error', (err) => console.error(`Redis (${name}):`, err.message));
+  }
 
-  await Promise.all([pubClient.connect(), subClient.connect()]);
+  await Promise.all([pub.connect(), sub.connect(), client.connect()]);
   console.log('Połączono z Redis');
 
-  return createAdapter(pubClient, subClient);
+  clients = { pub, sub, client };
+  return clients;
 }
 
-module.exports = { createSocketAdapter };
+/** Adapter Socket.IO rozgłaszający wiadomości między instancjami backendu. */
+function createSocketAdapter() {
+  return clients ? createAdapter(clients.pub, clients.sub) : null;
+}
+
+/** Ogólny klient Redis (rate limiting, health-check) lub null. */
+function getRedisClient() {
+  return clients ? clients.client : null;
+}
+
+async function closeRedis() {
+  if (!clients) return;
+  await Promise.allSettled([clients.pub.quit(), clients.sub.quit(), clients.client.quit()]);
+  clients = null;
+}
+
+module.exports = { connectRedis, createSocketAdapter, getRedisClient, closeRedis };

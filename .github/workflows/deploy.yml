@@ -1,0 +1,97 @@
+# CI/CD: testy -> obrazy w ACR -> migracje (job-release) -> rollout api i web.
+# Logowanie do Azure przez OIDC (federated credential) – żadnego hasła/klucza w sekretach GitHuba.
+# Wymagane zmienne repozytorium (Settings -> Variables): AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# AZURE_SUBSCRIPTION_ID, AZURE_RG, AZURE_ACR. Konfiguracja: infra/azure/README.md, sekcja 5.
+name: deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backend – zależności, audyt, testy
+        working-directory: backend
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+          npm test
+      - name: Frontend – zależności, build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Skan obrazów (Trivy)
+        run: |
+          docker build -t fishing-api:ci backend
+          docker build -t fishing-web:ci frontend
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fishing-api:ci
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fishing-web:ci
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+
+  deploy:
+    needs: test
+    # Uruchamiaj wdrożenie tylko gdy Azure jest skonfigurowany (zmienne ustawione)
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    environment: production   # w GitHub: required reviewers = ręczna bramka przed wdrożeniem
+    env:
+      RG: ${{ vars.AZURE_RG }}
+      ACR: ${{ vars.AZURE_ACR }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build obrazów w ACR
+        run: |
+          az acr build -r "$ACR" -t "fishing-api:$TAG" backend
+          az acr build -r "$ACR" -t "fishing-web:$TAG" frontend
+
+      - name: Migracje (job-release) – przed wdrożeniem nowej wersji
+        run: |
+          az containerapp job update -g "$RG" -n job-release --image "$ACR.azurecr.io/fishing-api:$TAG"
+          az containerapp job start -g "$RG" -n job-release
+          for i in $(seq 1 60); do
+            STATUS=$(az containerapp job execution list -g "$RG" -n job-release --query "[0].properties.status" -o tsv)
+            echo "status: $STATUS"
+            [ "$STATUS" = "Succeeded" ] && exit 0
+            [ "$STATUS" = "Failed" ] && exit 1
+            sleep 10
+          done
+          echo "timeout"; exit 1
+
+      - name: Rollout api i web
+        run: |
+          az containerapp update -g "$RG" -n api --image "$ACR.azurecr.io/fishing-api:$TAG"
+          az containerapp update -g "$RG" -n web --image "$ACR.azurecr.io/fishing-web:$TAG"
+
+      - name: Smoke test
+        run: |
+          FQDN=$(az containerapp show -g "$RG" -n web --query properties.configuration.ingress.fqdn -o tsv)
+          curl -fsS -o /dev/null -w "web %{http_code}\n" "https://$FQDN/healthz"
+          curl -fsS -o /dev/null -w "api %{http_code}\n" "https://$FQDN/api/tournaments"

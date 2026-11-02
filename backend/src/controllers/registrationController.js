@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { parsePositiveInt, HttpError, handleError } = require('../utils/validation');
+const { isOrganizer, canViewTournament } = require('../services/tournamentAccess');
 
 /**
  * Numer porządkowy stanowiska (0-based) -> { sector, spot_number }.
@@ -41,7 +42,9 @@ exports.registerUser = async (req, res) => {
         [tournamentId]
       );
       const tournament = tRes.rows[0];
-      if (!tournament) throw new HttpError(404, 'Zawody nie istnieją.');
+      if (!tournament || (tournament.status === 'DRAFT' && !isOrganizer(req.user))) {
+        throw new HttpError(404, 'Zawody nie istnieją.');
+      }
       if (tournament.status !== 'OPEN') {
         throw new HttpError(409, 'Zapisy na te zawody nie są otwarte.');
       }
@@ -71,9 +74,49 @@ exports.registerUser = async (req, res) => {
     res.status(201).json(registration);
   } catch (err) {
     if (err.code === '23505') {
-      return res.status(409).json({ message: 'Jesteś już zapisany na te zawody.' });
+      // Różne naruszenia unikalności to różne problemy – nie zgłaszamy wszystkich jako "już zapisany"
+      if (err.constraint === 'unique_user_tournament') {
+        return res.status(409).json({ message: 'Jesteś już zapisany na te zawody.' });
+      }
+      if (err.constraint === 'unique_tournament_spot') {
+        console.error('Kolizja stanowiska mimo blokady FOR UPDATE:', err.detail);
+        return res.status(409).json({ message: 'Stanowisko zostało właśnie zajęte. Spróbuj ponownie.' });
+      }
     }
     handleError(res, err, 'Błąd rejestracji na zawody');
+  }
+};
+
+/** Wypisanie się z zawodów – możliwe tylko, gdy zapisy są jeszcze otwarte. */
+exports.withdraw = async (req, res) => {
+  const tournamentId = parsePositiveInt(req.params.tournamentId);
+  // Organizator może wypisać wskazanego uczestnika; wędkarz tylko siebie
+  const targetUserId = req.params.userId ? parsePositiveInt(req.params.userId) : req.user.id;
+
+  if (!tournamentId || !targetUserId) {
+    return res.status(400).json({ message: 'Nieprawidłowy identyfikator.' });
+  }
+  if (targetUserId !== req.user.id && !isOrganizer(req.user)) {
+    return res.status(403).json({ message: 'Brak uprawnień do wykonania tej operacji' });
+  }
+
+  try {
+    await db.withTransaction(async (client) => {
+      const tRes = await client.query('SELECT status FROM tournaments WHERE id = $1 FOR UPDATE', [tournamentId]);
+      const tournament = tRes.rows[0];
+      if (!tournament) throw new HttpError(404, 'Zawody nie istnieją.');
+      if (tournament.status !== 'OPEN') {
+        throw new HttpError(409, 'Wypisanie możliwe tylko w czasie otwartych zapisów.');
+      }
+      const del = await client.query(
+        'DELETE FROM registrations WHERE tournament_id = $1 AND user_id = $2 RETURNING id',
+        [tournamentId, targetUserId]
+      );
+      if (del.rows.length === 0) throw new HttpError(404, 'Brak takiej rejestracji.');
+    });
+    res.status(204).end();
+  } catch (err) {
+    handleError(res, err, 'Błąd wypisywania z zawodów');
   }
 };
 
@@ -84,14 +127,11 @@ exports.getByTournament = async (req, res) => {
   }
 
   // Adresy e-mail widzą tylko organizatorzy; wędkarze dostają listę nazwisk i stanowisk.
-  const isOrganizer = req.user.role === 'ADMIN' || req.user.role === 'JUDGE';
-  const emailColumn = isOrganizer ? ', u.email' : '';
+  const emailColumn = isOrganizer(req.user) ? ', u.email' : '';
 
   try {
-    const exists = await db.query('SELECT 1 FROM tournaments WHERE id = $1', [tournamentId]);
-    if (exists.rows.length === 0) {
-      return res.status(404).json({ message: 'Zawody nie istnieją.' });
-    }
+    const { access } = await canViewTournament(req.user, tournamentId);
+    if (access !== 'ok') return res.status(404).json({ message: 'Zawody nie istnieją.' });
 
     const result = await db.query(
       `SELECT r.id, r.tournament_id, r.user_id, r.sector, r.spot_number, r.registered_at,

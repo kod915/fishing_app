@@ -1,24 +1,25 @@
 # Lokalne odwzorowanie architektury docelowej:
-#   frontend (nginx, pełni rolę load balancera / reverse proxy) -> N x backend -> postgres + redis
+#   frontend (nginx, reverse proxy / load balancer) -> N x backend -> postgres + redis
 #
-#   docker compose up --build -d
-#   docker compose up -d --scale backend=3        # kilka instancji backendu (czat działa dzięki Redis)
-#   docker compose exec backend node db/seedUsers.js   # ustawia hasła kont demo (haslo123)
+#   export JWT_SECRET=$(openssl rand -base64 48)      # PowerShell: $env:JWT_SECRET = "<min. 32 znaki>"
+#   docker compose up --build -d --scale backend=3
+#   docker compose run --rm -e NODE_ENV=development backend npm run db:seed   # konta demo (haslo123)
 #
 # Aplikacja: http://localhost:8080
+#
+# Schemat bazy NIE jest wgrywany przez docker-entrypoint-initdb.d (działa tylko na pustym
+# wolumenie, więc zmiany schematu nie trafiałyby do istniejącej bazy). Zamiast tego
+# usługa `migrate` uruchamia migracje przed startem backendu – tak jak krok release w chmurze.
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: fishing_db
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Schemat i dane startowe wgrywane automatycznie przy pierwszym starcie (pusty wolumen)
-      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./backend/db/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
     ports:
       - "5433:5432"
     healthcheck:
@@ -35,21 +36,40 @@ services:
       timeout: 3s
       retries: 10
 
+  # Krok release: migracje schematu (jednorazowo, przed backendem)
+  migrate:
+    build: ./backend
+    command: npm run db:migrate
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/fishing_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build: ./backend
     environment:
+      NODE_ENV: production
       PORT: 5000
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fishing_db
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/fishing_db
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-super_secret_key_change_me}
-      # Frontend jest serwowany z tego samego origin (nginx proxuje /api), więc CORS
-      # potrzebny tylko dla dev-serwera Vite odpalanego lokalnie.
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173,http://localhost:8080}
+      # Brak wartości = błąd startu, nie cichy słaby klucz
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (min. 32 chars)}
+      # Frontend jest na tym samym origin (nginx proxuje /api) – CORS tylko dla dev-serwera Vite
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      TRUST_PROXY_HOPS: 1
+      PG_POOL_MAX: 8
+      # Postgres w tej samej sieci Dockera, bez certyfikatu TLS. W chmurze NIE ustawiać.
+      PG_SSL: disable
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     # Bez "ports" – backend dostępny tylko wewnątrz sieci compose, przez nginx.
     # Dzięki temu można uruchomić wiele replik: --scale backend=3
 
@@ -57,8 +77,10 @@ services:
     build: ./frontend
     environment:
       BACKEND_URL: http://backend:5000
+      CSP_CONNECT_SRC: "'self'"
+      HSTS_MAX_AGE: 0
     ports:
-      - "8080:80"
+      - "8080:8080"
     depends_on:
       - backend
 

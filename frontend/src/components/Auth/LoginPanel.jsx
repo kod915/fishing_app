@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { apiRequest } from '../../api/client';
+import { apiRequest, saveSession } from '../../api/client';
 
 const DEMO_PASSWORD = 'haslo123';
 
@@ -16,8 +16,7 @@ export default function LoginPanel({ onLogin }) {
         setLoading(true);
         try {
             const data = await apiRequest('/auth/login', 'POST', { email: mail, password: pass });
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('user', JSON.stringify(data.user));
+            saveSession(data);
             onLogin(data.user);
         } catch (e) {
             setError(e.message);
@@ -61,7 +60,9 @@ export default function LoginPanel({ onLogin }) {
                 </div>
                 <div style={{ marginBottom: '12px' }}>
                     <label style={{ display: 'block', marginBottom: '4px' }}>Hasło:</label>
-                    <input style={input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                    <input style={input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+                           minLength={mode === 'register' ? 12 : undefined} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} />
+                    {mode === 'register' && <small style={{ color: '#64748b' }}>Minimum 12 znaków.</small>}
                 </div>
 
                 {error && <p style={{ color: '#dc2626' }}>{error}</p>}

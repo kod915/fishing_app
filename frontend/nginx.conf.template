@@ -1,18 +1,35 @@
-# Szablon przetwarzany przez obraz nginx przy starcie (envsubst na ${BACKEND_URL}).
+# Szablon przetwarzany przez obraz nginx przy starcie (envsubst na ${BACKEND_URL}, ${CSP_CONNECT_SRC}).
+# Obraz nginx-unprivileged: proces bez roota, nasłuch na porcie 8080.
 server {
-    listen 80;
+    listen 8080;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
 
+    server_tokens off;
+    client_max_body_size 64k;
+
     gzip on;
     gzip_types text/plain text/css application/json application/javascript image/svg+xml;
+
+    # Nagłówki bezpieczeństwa. Zdefiniowane na poziomie server – lokacje poniżej
+    # NIE mają własnych add_header, więc dziedziczą je wszystkie (nginx nie łączy
+    # add_header z zagnieżdżonych poziomów).
+    # 'unsafe-inline' dla styli: UI używa inline style={{...}} w React.
+    # connect-src 'self' obejmuje też wss:// na tym samym hoście (CSP3).
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${CSP_CONNECT_SRC}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
+    # HSTS ma sens dopiero gdy domena działa po HTTPS (ustaw HSTS_MAX_AGE=31536000)
+    add_header Strict-Transport-Security "max-age=${HSTS_MAX_AGE}" always;
 
     # Health-check dla load balancera / orkiestratora
     location = /healthz {
         access_log off;
+        default_type text/plain;
         return 200 "ok\n";
-        add_header Content-Type text/plain;
     }
 
     # REST API -> backend
@@ -39,10 +56,10 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # Statyczne assety z długim cache (Vite nadaje hash w nazwach plików)
+    # Statyczne assety z długim cache (Vite nadaje hash w nazwach plików).
+    # `expires` ustawia Cache-Control bez add_header – nagłówki bezpieczeństwa są dziedziczone.
     location /assets/ {
         expires 1y;
-        add_header Cache-Control "public, immutable";
     }
 
     # SPA fallback

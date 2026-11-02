@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { parsePositiveInt, parseText, parseDate, handleError } = require('../utils/validation');
+const { isOrganizer } = require('../services/tournamentAccess');
 
 const STATUSES = ['DRAFT', 'OPEN', 'IN_PROGRESS', 'FINISHED'];
 
@@ -11,8 +12,6 @@ const TRANSITIONS = {
   IN_PROGRESS: ['FINISHED'],
   FINISHED: [],
 };
-
-const isOrganizer = (user) => !!user && (user.role === 'ADMIN' || user.role === 'JUDGE');
 
 exports.getAll = async (req, res) => {
   // Wersje robocze (DRAFT) widzą tylko organizatorzy; goście i wędkarze – opublikowane zawody.

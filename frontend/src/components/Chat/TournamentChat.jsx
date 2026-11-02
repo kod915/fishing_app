@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { apiRequest, SOCKET_URL } from '../../api/client';
+import { apiRequest, ensureToken, SOCKET_URL } from '../../api/client';
 
 // scala listy wiadomości bez duplikatów (po id)
 const mergeById = (a, b) => {
@@ -41,11 +41,16 @@ export default function TournamentChat({ tournament, user }) {
 
         // Połączenie w czasie rzeczywistym.
         // Sam websocket (bez long-pollingu) – nie wymaga sticky sessions na load balancerze.
+        // `auth` jako funkcja: przy każdym (re)connect pobieramy aktualny token –
+        // serwer rozłącza socket po wygaśnięciu JWT, a klient wraca już z odświeżonym.
         const socket = io(SOCKET_URL || undefined, {
-            auth: { token: localStorage.getItem('token') },
+            auth: (cb) => ensureToken().then((token) => cb({ token })),
             transports: ['websocket'],
         });
         socketRef.current = socket;
+
+        // Serwer zamyka połączenie, gdy token wygasł; socket.io sam wznowi połączenie
+        socket.on('auth:expired', () => setError('Sesja odświeżana...'));
 
         // 'connect' odpala się też przy każdym automatycznym reconnect
         socket.on('connect', () => {
@@ -60,7 +65,10 @@ export default function TournamentChat({ tournament, user }) {
             });
         });
         socket.on('disconnect', () => setConnected(false));
-        socket.on('connect_error', (e) => setError(e.message));
+        socket.on('connect_error', (e) => {
+            setError(e.message);
+            // middleware odrzucił token (np. wygasł między ensureToken a handshake) – socket.io spróbuje ponownie
+        });
         socket.on('chat:message', (msg) => {
             if (msg.tournament_id === tournament.id) setMessages((prev) => mergeById(prev, [msg]));
         });

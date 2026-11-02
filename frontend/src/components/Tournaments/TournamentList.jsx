@@ -41,6 +41,20 @@ export default function TournamentList({ user, onSelectTournament, onOpenChat })
         }
     };
 
+    const withdraw = async (t) => {
+        if (!window.confirm(`Wypisać się z „${t.name}”? Stanowisko zostanie zwolnione.`)) return;
+        setError(''); setInfo(''); setBusyId(t.id);
+        try {
+            await apiRequest(`/registrations/tournament/${t.id}`, 'DELETE');
+            await load();
+            setInfo(`Wypisano z „${t.name}”.`);
+        } catch (e) {
+            setError(e.message);
+        } finally {
+            setBusyId(null);
+        }
+    };
+
     const changeStatus = async (t, status) => {
         setError(''); setInfo(''); setBusyId(t.id);
         try {
@@ -98,6 +112,10 @@ export default function TournamentList({ user, onSelectTournament, onOpenChat })
 
                             {(t.is_registered || isOrganizer) && (
                                 <button style={btn('#7c3aed')} onClick={() => onOpenChat(t)}>💬 Czat</button>
+                            )}
+
+                            {user.role === 'ANGLER' && t.is_registered && t.status === 'OPEN' && (
+                                <button style={btn('#ef4444', busy)} disabled={busy} onClick={() => withdraw(t)}>Wypisz się</button>
                             )}
 
                             {isOrganizer && next && (

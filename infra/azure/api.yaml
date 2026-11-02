@@ -1,0 +1,32 @@
+# Sondy zdrowia i reguły skalowania aplikacji `api` (Azure Container Apps).
+# Użycie (po utworzeniu aplikacji przez deploy.sh):
+#   az containerapp show -g $RG -n api --query properties.template.containers[0].image -o tsv   # wklej poniżej
+#   az containerapp update -g $RG -n api --yaml infra/azure/api.yaml
+properties:
+  template:
+    containers:
+      - name: api
+        image: <ACR>.azurecr.io/fishing-api:<TAG>
+        probes:
+          # /health – proces żyje (bez zależności zewnętrznych)
+          - type: Startup
+            httpGet: { path: /health, port: 5000 }
+            periodSeconds: 3
+            failureThreshold: 20
+          - type: Liveness
+            httpGet: { path: /health, port: 5000 }
+            periodSeconds: 10
+          # /ready – baza i Redis odpowiadają; replika bez gotowości nie dostaje ruchu
+          - type: Readiness
+            httpGet: { path: /ready, port: 5000 }
+            periodSeconds: 10
+    scale:
+      # Minimum 2 – restart jednej repliki nie wyłącza czatu; nigdy do zera (długie WebSockety)
+      minReplicas: 2
+      maxReplicas: 6
+      rules:
+        - name: http-load
+          http: { metadata: { concurrentRequests: "60" } }
+        # Bezczynne WebSockety mogą nie liczyć się do reguły HTTP – stąd dodatkowo CPU
+        - name: cpu
+          custom: { type: cpu, metadata: { type: Utilization, value: "70" } }
