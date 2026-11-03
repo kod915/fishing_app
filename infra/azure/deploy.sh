@@ -15,57 +15,87 @@ export PG=${PG:?np. pg-fishing-abc123}
 export CAE=${CAE:-cae-fishing}
 export UAMI=${UAMI:-id-fishing}
 export TAG=${TAG:-$(git rev-parse --short HEAD)}
+# Strefa DNS nie może nazywać się tak jak serwer PG. Formę [a].[b].postgres.database.azure.com wymaga Azure.
+export PG_DNS_ZONE="${PG_DNS_ZONE:-fishing.private.postgres.database.azure.com}"
 
 step() { echo; echo "=== $*"; }
+exists() { "$@" >/dev/null 2>&1; }
 
 step "0. Providery i rozszerzenie CLI"
-az extension add --name containerapp --upgrade >/dev/null
+az extension add --name containerapp --upgrade --yes >/dev/null 2>&1 || true
 for p in Microsoft.App Microsoft.OperationalInsights Microsoft.DBforPostgreSQL Microsoft.Cache \
          Microsoft.KeyVault Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.Network; do
-  az provider register --namespace "$p" >/dev/null
+  az provider register --namespace "$p" --wait >/dev/null
 done
 
-step "1. Grupa zasobów, sieć, logi"
+step "1. Grupa zasobów, sieć, prywatny DNS, logi"
 az group create -n "$RG" -l "$LOC" >/dev/null
-az network vnet create -g "$RG" -n "$VNET" --address-prefixes 10.20.0.0/16 >/dev/null
-az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-aca --address-prefixes 10.20.0.0/23 \
-  --delegations Microsoft.App/environments >/dev/null
-az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-pg --address-prefixes 10.20.2.0/28 \
-  --delegations Microsoft.DBforPostgreSQL/flexibleServers >/dev/null
-az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-pe --address-prefixes 10.20.3.0/27 >/dev/null
-az monitor log-analytics workspace create -g "$RG" -n log-fishing >/dev/null
+exists az network vnet show -g "$RG" -n "$VNET" || \
+  az network vnet create -g "$RG" -n "$VNET" --address-prefixes 10.20.0.0/16 >/dev/null
+exists az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n snet-aca || \
+  az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-aca --address-prefixes 10.20.0.0/23 \
+    --delegations Microsoft.App/environments >/dev/null
+exists az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n snet-pg || \
+  az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-pg --address-prefixes 10.20.2.0/28 \
+    --delegations Microsoft.DBforPostgreSQL/flexibleServers >/dev/null
+exists az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n snet-pe || \
+  az network vnet subnet create -g "$RG" --vnet-name "$VNET" -n snet-pe --address-prefixes 10.20.3.0/27 >/dev/null
+exists az monitor log-analytics workspace show -g "$RG" -n log-fishing || \
+  az monitor log-analytics workspace create -g "$RG" -n log-fishing >/dev/null
+
+# CLI nie tworzy już strefy ani linku VNet przy `postgres flexible-server create` – bez tego serwer
+# nie wstaje, a Container Apps nie rozwiążą hosta bazy.
+exists az network private-dns zone show -g "$RG" -n "$PG_DNS_ZONE" || \
+  az network private-dns zone create -g "$RG" -n "$PG_DNS_ZONE" >/dev/null
+exists az network private-dns link vnet show -g "$RG" -z "$PG_DNS_ZONE" -n "link-${VNET}-pg" || \
+  az network private-dns link vnet create -g "$RG" -n "link-${VNET}-pg" \
+    --zone-name "$PG_DNS_ZONE" --virtual-network "$VNET" --registration-enabled false >/dev/null
 
 step "2. Tożsamość zarządzana i Key Vault"
-az identity create -g "$RG" -n "$UAMI" >/dev/null
+exists az identity show -g "$RG" -n "$UAMI" || az identity create -g "$RG" -n "$UAMI" >/dev/null
 UAMI_ID=$(az identity show -g "$RG" -n "$UAMI" --query id -o tsv)
 UAMI_PRINCIPAL=$(az identity show -g "$RG" -n "$UAMI" --query principalId -o tsv)
 
-az keyvault create -g "$RG" -n "$KV" -l "$LOC" --enable-rbac-authorization true --enable-purge-protection true >/dev/null
+exists az keyvault show -n "$KV" -g "$RG" || \
+  az keyvault create -g "$RG" -n "$KV" -l "$LOC" --enable-rbac-authorization true --enable-purge-protection true >/dev/null
 KV_ID=$(az keyvault show -n "$KV" --query id -o tsv)
 KV_URI=$(az keyvault show -n "$KV" --query properties.vaultUri -o tsv)
 ME=$(az ad signed-in-user show --query id -o tsv)
-az role assignment create --assignee "$ME" --role "Key Vault Secrets Officer" --scope "$KV_ID" >/dev/null
+az role assignment create --assignee "$ME" --role "Key Vault Secrets Officer" --scope "$KV_ID" >/dev/null 2>&1 || true
 az role assignment create --assignee-object-id "$UAMI_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-  --role "Key Vault Secrets User" --scope "$KV_ID" >/dev/null
+  --role "Key Vault Secrets User" --scope "$KV_ID" >/dev/null 2>&1 || true
 echo "Czekam 60 s na propagację ról RBAC..."; sleep 60
 
 az keyvault secret set --vault-name "$KV" -n jwt-secret --value "$(openssl rand -base64 48 | tr -d '\n')" >/dev/null
 
 step "3. PostgreSQL Flexible Server (prywatny, TLS)"
-PG_ADMIN_PASS=$(openssl rand -hex 24)
-az postgres flexible-server create -g "$RG" -n "$PG" -l "$LOC" \
-  --version 16 --tier Burstable --sku-name Standard_B1ms --storage-size 32 \
-  --vnet "$VNET" --subnet snet-pg --private-dns-zone "$PG.private.postgres.database.azure.com" \
-  --admin-user pgadmin --admin-password "$PG_ADMIN_PASS" \
-  --backup-retention 14 --yes >/dev/null
-az postgres flexible-server db create -g "$RG" -s "$PG" -d fishing_db >/dev/null
+PG_SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n snet-pg --query id -o tsv)
+PG_DNS_ID=$(az network private-dns zone show -g "$RG" -n "$PG_DNS_ZONE" --query id -o tsv)
+PG_STATE=$(az postgres flexible-server show -g "$RG" -n "$PG" --query state -o tsv 2>/dev/null || true)
+if [ -n "$PG_STATE" ] && [ "$PG_STATE" != "Ready" ]; then
+  echo "Usuwam serwer PostgreSQL w stanie $PG_STATE (zostawiony po nieudanym create)..."
+  az postgres flexible-server delete -g "$RG" -n "$PG" --yes >/dev/null
+  PG_STATE=
+fi
+if [ "$PG_STATE" = "Ready" ]; then
+  echo "PostgreSQL $PG już istnieje – pomijam create (sekrety DB w Key Vault mogą być nieaktualne)."
+else
+  PG_ADMIN_PASS=$(openssl rand -hex 24)
+  az postgres flexible-server create -g "$RG" -n "$PG" -l "$LOC" \
+    --version 16 --tier Burstable --sku-name Standard_B1ms --storage-size 32 \
+    --subnet "$PG_SUBNET_ID" --private-dns-zone "$PG_DNS_ID" \
+    --admin-user pgadmin --admin-password "$PG_ADMIN_PASS" \
+    --backup-retention 14 --yes
+  PG_HOST=$(az postgres flexible-server show -g "$RG" -n "$PG" --query fullyQualifiedDomainName -o tsv)
+  APP_DB_PASS=$(openssl rand -hex 24)
+  az keyvault secret set --vault-name "$KV" -n db-admin-url --value "postgres://pgadmin:${PG_ADMIN_PASS}@${PG_HOST}:5432/fishing_db" >/dev/null
+  az keyvault secret set --vault-name "$KV" -n app-db-pass  --value "$APP_DB_PASS" >/dev/null
+  az keyvault secret set --vault-name "$KV" -n db-url       --value "postgres://fishing_app:${APP_DB_PASS}@${PG_HOST}:5432/fishing_db" >/dev/null
+  unset PG_ADMIN_PASS APP_DB_PASS
+fi
+exists az postgres flexible-server db show -g "$RG" -s "$PG" -n fishing_db || \
+  az postgres flexible-server db create -g "$RG" -s "$PG" -d fishing_db >/dev/null
 PG_HOST=$(az postgres flexible-server show -g "$RG" -n "$PG" --query fullyQualifiedDomainName -o tsv)
-
-APP_DB_PASS=$(openssl rand -hex 24)
-az keyvault secret set --vault-name "$KV" -n db-admin-url --value "postgres://pgadmin:${PG_ADMIN_PASS}@${PG_HOST}:5432/fishing_db" >/dev/null
-az keyvault secret set --vault-name "$KV" -n app-db-pass  --value "$APP_DB_PASS" >/dev/null
-az keyvault secret set --vault-name "$KV" -n db-url       --value "postgres://fishing_app:${APP_DB_PASS}@${PG_HOST}:5432/fishing_db" >/dev/null
-unset PG_ADMIN_PASS APP_DB_PASS
 
 step "4. Azure Managed Redis – krok RĘCZNY w portalu (patrz README 4.4)"
 echo "Utwórz Azure Managed Redis (Balanced B0/B1, private endpoint w snet-pe, clustering policy: Enterprise),"
@@ -73,10 +103,10 @@ echo "następnie zapisz URL:  az keyvault secret set --vault-name $KV -n redis-u
 read -r -p "Naciśnij Enter, gdy sekret redis-url jest w Key Vault..." _
 
 step "5. Container Registry i obrazy"
-az acr create -g "$RG" -n "$ACR" --sku Basic --admin-enabled false >/dev/null
+exists az acr show -n "$ACR" || az acr create -g "$RG" -n "$ACR" --sku Basic --admin-enabled false >/dev/null
 ACR_ID=$(az acr show -n "$ACR" --query id -o tsv)
 az role assignment create --assignee-object-id "$UAMI_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-  --role AcrPull --scope "$ACR_ID" >/dev/null
+  --role AcrPull --scope "$ACR_ID" >/dev/null 2>&1 || true
 az acr build -r "$ACR" -t "fishing-api:$TAG" ./backend
 az acr build -r "$ACR" -t "fishing-web:$TAG" ./frontend
 
@@ -84,10 +114,11 @@ step "6. Środowisko Container Apps (w VNecie, z logami)"
 LAW_ID=$(az monitor log-analytics workspace show -g "$RG" -n log-fishing --query customerId -o tsv)
 LAW_KEY=$(az monitor log-analytics workspace get-shared-keys -g "$RG" -n log-fishing --query primarySharedKey -o tsv)
 ACA_SUBNET=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n snet-aca --query id -o tsv)
-az containerapp env create -g "$RG" -n "$CAE" -l "$LOC" \
-  --infrastructure-subnet-resource-id "$ACA_SUBNET" \
-  --enable-workload-profiles true \
-  --logs-workspace-id "$LAW_ID" --logs-workspace-key "$LAW_KEY" >/dev/null
+exists az containerapp env show -g "$RG" -n "$CAE" || \
+  az containerapp env create -g "$RG" -n "$CAE" -l "$LOC" \
+    --infrastructure-subnet-resource-id "$ACA_SUBNET" \
+    --enable-workload-profiles true \
+    --logs-workspace-id "$LAW_ID" --logs-workspace-key "$LAW_KEY" >/dev/null
 # szyfrowanie ruchu web -> api wewnątrz środowiska (jeśli flaga nieznana: portal -> Networking)
 az containerapp env update -g "$RG" -n "$CAE" --enable-peer-to-peer-encryption true >/dev/null || \
   echo "UWAGA: włącz peer-to-peer encryption ręcznie w portalu."

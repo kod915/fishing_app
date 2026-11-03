@@ -87,14 +87,25 @@ export KV=kv-fishing-abc123 ACR=acrfishingabc123 PG=pg-fishing-abc123   # nazwy 
 bash infra/azure/deploy.sh
 ```
 
-### 4.1 Grupa zasobów, sieć, logi
+### 4.1 Grupa zasobów, sieć, prywatny DNS, logi
 VNet `10.20.0.0/16` z trzema podsieciami: `snet-aca` (/23, delegacja `Microsoft.App/environments`), `snet-pg` (/28, delegacja dla Flexible Server), `snet-pe` (/27, private endpointy). Workspace Log Analytics `log-fishing`.
+
+**Prywatna strefa DNS (wymagana przed PostgreSQL):** `az postgres flexible-server create` wymaga **istniejącej** strefy (`--private-dns-zone` to nazwa lub ID już utworzonego zasobu) i **nie tworzy** linku VNet. Skrypt najpierw:
+
+```bash
+az network private-dns zone create -g $RG -n fishing.private.postgres.database.azure.com
+az network private-dns link vnet create -g $RG -n link-$VNET-pg \
+  --zone-name fishing.private.postgres.database.azure.com \
+  --virtual-network $VNET --registration-enabled false
+```
+
+Nazwa strefy musi kończyć się na `.postgres.database.azure.com` i **nie może być nazwą serwera** (`$PG`). Bez linku VNet Container Apps nie rozwiążą hosta bazy – job migracji i `api` nie wstają.
 
 ### 4.2 Tożsamość zarządzana i Key Vault
 Jedna tożsamość user-assigned `id-fishing` ma rolę **AcrPull** (pobieranie obrazów) i **Key Vault Secrets User** (odczyt sekretów). Dzięki temu nigdzie nie istnieje hasło do rejestru ani klucz do Key Vault. Key Vault w trybie RBAC z purge protection. Sekrety (nazwy ≤ 20 znaków – wymaganie Container Apps): `jwt-secret`, `db-url`, `db-admin-url`, `app-db-pass`, `redis-url`, `admin-pass`. Generowane losowo (`openssl rand`), nigdy wpisywane do plików w repo.
 
 ### 4.3 PostgreSQL (prywatny)
-`az postgres flexible-server create --vnet ... --subnet snet-pg --private-dns-zone ...` – dostęp wyłącznie z VNetu; **wyboru prywatnego dostępu nie da się później cofnąć** (i o to chodzi). TLS wymagany po stronie serwera; `db.js` weryfikuje certyfikat. Dwa konta: `pgadmin` (tylko job release) i `fishing_app` (aplikacja, tylko SELECT/INSERT/UPDATE/DELETE). Retencja backupów 14 dni. Dla realnych zawodów: `--tier GeneralPurpose --sku-name Standard_D2ds_v5 --high-availability ZoneRedundant`. Sprawdź `SHOW max_connections;` – `PG_POOL_MAX × max repliki api` musi być poniżej limitu (8 × 6 = 48 przy B1ms, limit 50 → przy skalowaniu powyżej 6 replik zwiększ SKU).
+`az postgres flexible-server create --subnet <ID snet-pg> --private-dns-zone <ID strefy>` – dostęp wyłącznie z VNetu; **wyboru prywatnego dostępu nie da się później cofnąć** (i o to chodzi). Przekazuj **resource ID** strefy i podsieci (nie samą nazwę strefy, której Azure nie znajdzie, jeśli nie została utworzona w kroku 4.1). TLS wymagany po stronie serwera; `db.js` weryfikuje certyfikat. Dwa konta: `pgadmin` (tylko job release) i `fishing_app` (aplikacja, tylko SELECT/INSERT/UPDATE/DELETE). Retencja backupów 14 dni. Dla realnych zawodów: `--tier GeneralPurpose --sku-name Standard_D2ds_v5 --high-availability ZoneRedundant`. Sprawdź `SHOW max_connections;` – `PG_POOL_MAX × max repliki api` musi być poniżej limitu (8 × 6 = 48 przy B1ms, limit 50 → przy skalowaniu powyżej 6 replik zwiększ SKU).
 
 ### 4.4 Azure Managed Redis (ręcznie, portal)
 1. Utwórz zasób **Azure Managed Redis**, ten sam region i grupa, najmniejszy rozmiar Balanced.
