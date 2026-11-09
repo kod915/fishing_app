@@ -1,0 +1,7 @@
+# Override tylko dla skanu DAST w CI.
+# Nagłówek HSTS z realnym max-age: ZAP ocenia go pasywnie nawet na HTTP.
+# Lokalny compose zostaje z HSTS_MAX_AGE=0 (brak HTTPS na localhost).
+services:
+  frontend:
+    environment:
+      HSTS_MAX_AGE: "31536000"

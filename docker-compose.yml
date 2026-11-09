@@ -78,7 +78,7 @@ services:
     environment:
       BACKEND_URL: http://backend:5000
       CSP_CONNECT_SRC: "'self'"
-      HSTS_MAX_AGE: 0
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-0}
     ports:
       - "8080:8080"
     depends_on:

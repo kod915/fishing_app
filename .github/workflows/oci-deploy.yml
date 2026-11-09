@@ -1,0 +1,66 @@
+# CD na Oracle Cloud: obrazy → OCIR → pipeline DevOps (staging) → DAST → produkcja.
+# Nie uruchamia się, dopóki w Settings → Variables nie ma OCI_TENANCY_NAMESPACE.
+# Sekrety i zmienne: infra/oci/README.md
+name: oci-deploy
+
+on:
+  workflow_dispatch:
+  # Dopiero po udanym CI (testy + DAST). Sam push nie wdraża na OCI.
+  workflow_run:
+    workflows: [deploy]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: oci-deploy
+  cancel-in-progress: false
+
+jobs:
+  push-ocir:
+    if: vars.OCI_TENANCY_NAMESPACE != '' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Repozytoria OCIR
+        uses: oracle-actions/get-ocir-repository@v1.3.0
+        id: api-repo
+        with:
+          name: fishing-api
+          compartment: ${{ secrets.OCI_COMPARTMENT_OCID }}
+
+      - uses: oracle-actions/get-ocir-repository@v1.3.0
+        id: web-repo
+        with:
+          name: fishing-web
+          compartment: ${{ secrets.OCI_COMPARTMENT_OCID }}
+
+      - name: Logowanie do OCIR
+        uses: oracle-actions/login-ocir@v1.3.0
+        with:
+          auth_token: ${{ secrets.OCI_AUTH_TOKEN }}
+
+      - name: Build i push
+        run: |
+          docker build -t "${{ steps.api-repo.outputs.repo_path }}:$TAG" backend
+          docker build -t "${{ steps.web-repo.outputs.repo_path }}:$TAG" frontend
+          docker push "${{ steps.api-repo.outputs.repo_path }}:$TAG"
+          docker push "${{ steps.web-repo.outputs.repo_path }}:$TAG"
+
+      - name: Uruchom pipeline wdrożenia OCI DevOps (staging)
+        if: vars.OCI_DEPLOY_PIPELINE_OCID != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.1
+        with:
+          command: devops deployment create --pipeline-id "${{ vars.OCI_DEPLOY_PIPELINE_OCID }}" --deployment-type PIPELINE --display-name "gh-${{ github.sha }}" --deployment-arguments '{"items":[{"name":"IMAGE_TAG","value":"${{ github.sha }}"}]}'
+          silent: false

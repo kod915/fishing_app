@@ -1,0 +1,45 @@
+# Specyfikacja etapu DAST w OCI DevOps Build Pipeline.
+# Oficjalny wzorzec: https://docs.oracle.com/en/learn/integrate-zap-oci-devops-build-pipeline/
+# APP_URL podaj jako parametr pipeline (URL stagingu, NIE produkcji).
+version: 0.1
+component: build
+timeoutInSeconds: 10000
+runAs: root
+shell: bash
+
+env:
+  variables:
+    APP_URL: "https://REPLACE_WITH_STAGING_URL"
+
+steps:
+  - type: Command
+    timeoutInSeconds: 1200
+    name: "ZAP Baseline Scan"
+    command: |
+      set -euo pipefail
+      test -n "${APP_URL}"
+      test "${APP_URL}" != "https://REPLACE_WITH_STAGING_URL"
+      set +e
+      docker run --rm --user root \
+        -v /docker-vol/agent-dir/ext/${OCI_PRIMARY_SOURCE_NAME}:/zap/wrk/:rw \
+        ghcr.io/zaproxy/zaproxy:stable \
+        zap-baseline.py \
+          -t "${APP_URL}" \
+          -c .zap/rules.tsv \
+          -d \
+          -r zap-report.html \
+          -J zap-report.json \
+          -x zap-report.xml
+      ZAP_RC=$?
+      set -e
+      ls -l zap-report.html zap-report.json
+      echo "ZAP exit=${ZAP_RC} (0=czysto, 1=FAIL, 2=WARN)"
+      exit "${ZAP_RC}"
+
+outputArtifacts:
+  - name: zap-report-html
+    type: BINARY
+    location: ${OCI_PRIMARY_SOURCE_DIR}/zap-report.html
+  - name: zap-report-json
+    type: BINARY
+    location: ${OCI_PRIMARY_SOURCE_DIR}/zap-report.json

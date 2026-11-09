@@ -1,0 +1,9 @@
+# ZAP Baseline – akceptowalne ustalenia (uzasadnione).
+# Format: rule-id <TAB> IGNORE|INFO|WARN|FAIL <TAB> komentarz
+# Nowe, nieoczekiwane WARN/FAIL nadal wywalają pipeline (fail_action: true).
+
+10055	IGNORE	style-src 'unsafe-inline' jest wymagane przez inline style={{}} w React; script-src pozostaje 'self', brak inline JS
+10027	IGNORE	komentarze w zbundlowanym JS Vite nie zawierają sekretów
+10096	IGNORE	sygnatury czasowe w hashed assetach frontendu, nie w API
+10109	IGNORE	SPA – baseline nie wykonuje JS; pokrycie API jest przez nginx /api i osobny skan staging
+10049	IGNORE	długi cache /assets/* jest zamierzony (hash w nazwie pliku Vite)

@@ -36,7 +36,13 @@ function buildApp() {
   app.set('trust proxy', env.trustProxyHops);
   app.disable('x-powered-by');
 
-  app.use(helmet());
+  // CSP i HSTS wystawia nginx na brzegu – jeden zestaw nagłówków, bez konfliktu
+  // max-age przy proxy /api. Helmet zostawia resztę (nosniff, frameguard, Referrer-Policy).
+  app.use(helmet({ contentSecurityPolicy: false, hsts: false }));
+  app.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
   app.use(cors(corsOptions));
   app.use(express.json({ limit: '16kb' }));
   app.use(cookieParser());

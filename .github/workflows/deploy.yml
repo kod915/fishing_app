@@ -1,12 +1,14 @@
-# CI/CD: testy -> obrazy w ACR -> migracje (job-release) -> rollout api i web.
+# CI/CD: testy -> DAST (ZAP) -> obrazy w ACR -> migracje (job-release) -> rollout api i web.
 # Logowanie do Azure przez OIDC (federated credential) – żadnego hasła/klucza w sekretach GitHuba.
 # Wymagane zmienne repozytorium (Settings -> Variables): AZURE_CLIENT_ID, AZURE_TENANT_ID,
 # AZURE_SUBSCRIPTION_ID, AZURE_RG, AZURE_ACR. Konfiguracja: infra/azure/README.md, sekcja 5.
+# DAST: .github/workflows/dast.yml, proces OCI: infra/oci/README.md
 name: deploy
 
 on:
   push:
     branches: [master]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -49,10 +51,18 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
 
-  deploy:
+  dast:
     needs: test
-    # Uruchamiaj wdrożenie tylko gdy Azure jest skonfigurowany (zmienne ustawione)
-    if: vars.AZURE_CLIENT_ID != ''
+    uses: ./.github/workflows/dast.yml
+    permissions:
+      contents: read
+    with:
+      scan_oci_staging: ${{ github.event_name != 'pull_request' }}
+
+  deploy:
+    needs: [test, dast]
+    # Uruchamiaj wdrożenie tylko z mastera, gdy Azure jest skonfigurowany
+    if: github.event_name != 'pull_request' && vars.AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     environment: production   # w GitHub: required reviewers = ręczna bramka przed wdrożeniem
     env:

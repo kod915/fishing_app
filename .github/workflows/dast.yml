@@ -1,0 +1,77 @@
+# DAST (ZAP Baseline) na efemerycznym stosie Docker Compose.
+# Wywoływane z deploy.yml po testach; ręcznie: Actions → dast → Run workflow.
+# Skan środowiska staging w Oracle Cloud: job zap-oci-staging (gdy OCI_STAGING_URL).
+name: dast
+
+on:
+  workflow_call:
+    inputs:
+      scan_oci_staging:
+        description: Skanuj też URL stagingu OCI (nie na PR)
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      scan_oci_staging:
+        description: Skanuj też URL stagingu OCI
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  zap-baseline:
+    name: ZAP baseline (compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JWT_SECRET: dast-ci-secret-not-for-production-use-32b
+      HSTS_MAX_AGE: "31536000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Uruchom stos
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dast.yml up -d --build
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null \
+               && curl -fsS http://127.0.0.1:8080/api/tournaments >/dev/null; then
+              echo "stack ready after ${i} checks"
+              exit 0
+            fi
+            sleep 4
+          done
+          echo "timeout waiting for stack"
+          docker compose -f docker-compose.yml -f docker-compose.dast.yml logs
+          exit 1
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: "http://127.0.0.1:8080"
+          rules_file_name: ".zap/rules.tsv"
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-baseline-compose
+
+      - name: Zatrzymaj stos
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.dast.yml down -v
+
+  zap-oci-staging:
+    name: ZAP baseline (OCI staging)
+    if: inputs.scan_oci_staging && vars.OCI_STAGING_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZAP Baseline Scan (staging OCI)
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: ${{ vars.OCI_STAGING_URL }}
+          rules_file_name: ".zap/rules.tsv"
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-baseline-oci-staging

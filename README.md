@@ -56,7 +56,8 @@ frontend/           React + Vite
   src/api/client.js wrapper fetch: odświeżanie sesji, retry po 401
   nginx.conf.template  reverse proxy + nagłówki bezpieczeństwa (CSP, HSTS…)
 infra/azure/        propozycja wdrożenia w Azure (README, deploy.sh, api.yaml)
-.github/workflows/  CI/CD (testy, audyt, Trivy, OIDC do Azure)
+infra/oci/          CI/CD + DAST na GitHubie i Oracle Cloud (ZAP, OCIR, DevOps)
+.github/workflows/  CI/CD (testy, audyt, Trivy, DAST/ZAP, OIDC do Azure, OCIR)
 docker-compose.yml  pełny stack: nginx → N × backend → PostgreSQL + Redis (+ job migracji)
 ```
 
@@ -164,8 +165,10 @@ Schemat jest w całości opisany migracjami SQL w `backend/db/migrations/` (`nod
 
 Propozycja bezpiecznego wdrożenia w Azure (Container Apps z wewnętrznym `api` i publicznym `web`, prywatny PostgreSQL, Managed Redis, Key Vault z managed identity, CI/CD przez OIDC) wraz ze skryptem `deploy.sh` i listą kontrolną bezpieczeństwa: [`infra/azure/README.md`](infra/azure/README.md).
 
+CI/CD z bramką DAST (OWASP ZAP) i ścieżką wdrożenia na Oracle Cloud (GitHub Actions → OCIR → OCI DevOps, drugi skan ZAP na stagingu): [`infra/oci/README.md`](infra/oci/README.md).
+
 ## Znane braki / dalsze kroki
 
 - brak procedury usunięcia konta i eksportu danych użytkownika (RODO)
-- brak testów integracyjnych w CI (wymagają bazy) – jest skrypt e2e uruchamiany ręcznie
+- brak testów integracyjnych w CI (wymagają bazy) – jest skrypt e2e uruchamiany ręcznie; DAST (ZAP baseline) stawia compose w pipeline
 - token dostępu trzymany w pamięci/`localStorage` – ograniczony do 15 min, sesję chroni cookie HttpOnly
