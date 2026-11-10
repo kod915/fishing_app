@@ -39,7 +39,8 @@ services:
   # Krok release: migracje schematu (jednorazowo, przed backendem)
   migrate:
     build: ./backend
-    command: npm run db:migrate
+    # Bez npm CLI w obrazie (Trivy) – wywołujemy lokalny bin bezpośrednio
+    command: ["node", "./node_modules/node-pg-migrate/bin/node-pg-migrate.js", "up", "-m", "db/migrations", "--migration-file-language", "sql"]
     environment:
       NODE_ENV: development
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/fishing_db

@@ -9,7 +9,8 @@ echo "[release] rola aplikacji"
 node db/roles.js create
 
 echo "[release] migracje"
-npm run db:migrate
+# Obraz produkcyjny nie ma npm CLI (Trivy) – bin lokalny
+node ./node_modules/node-pg-migrate/bin/node-pg-migrate.js up -m db/migrations --migration-file-language sql
 
 echo "[release] uprawnienia"
 node db/roles.js grant
