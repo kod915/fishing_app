@@ -9,8 +9,11 @@ ARG VITE_API_URL
 ARG VITE_SOCKET_URL
 RUN npm run build
 
-# nginx-unprivileged: proces jako użytkownik nginx (uid 101), port 8080
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+# 1.29+ (Alpine 3.23): nowszy openssl/brotli niż 1.27. apk upgrade domyka HIGH/CRITICAL.
+FROM nginxinc/nginx-unprivileged:1.29-alpine
+USER root
+RUN apk update && apk upgrade --no-cache
+USER nginx
 # Adres backendu, do którego nginx proxuje /api i /socket.io
 ENV BACKEND_URL=http://backend:5000
 # connect-src w CSP; 'self' wystarcza przy tym samym origin (także dla wss://)

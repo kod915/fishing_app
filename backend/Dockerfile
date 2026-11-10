@@ -9,7 +9,15 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN chmod +x db/release.sh
+RUN chmod +x db/release.sh \
+  # Runtime potrzebuje tylko `node` – npm CLI (pacote/sigstore/ip-address/…)
+  # zostawia w obrazie HIGH z Trivy i nie jest używany w produkcji.
+  && rm -rf \
+    /usr/local/lib/node_modules/npm \
+    /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx \
+    /usr/local/bin/corepack
 
 # Uruchamiamy jako użytkownik nieuprzywilejowany
 USER node

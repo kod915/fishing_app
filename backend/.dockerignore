@@ -1,4 +1,5 @@
 node_modules
+.trivy-nm
 npm-debug.log
 .env
 .env.*
@@ -6,3 +7,4 @@ npm-debug.log
 Dockerfile
 .dockerignore
 test
+*.md

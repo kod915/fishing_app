@@ -28,5 +28,9 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.12",
+    "minimatch": "^10.2.6"
   }
 }
