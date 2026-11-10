@@ -7,7 +7,7 @@ Istniejący pipeline Azure (`.github/workflows/deploy.yml`) zostaje. Ta ścieżk
 ## Przepływ
 
 ```
-push / pull request
+git push (master)
         │
         ▼
 ┌───────────────────────────────────┐
@@ -16,32 +16,59 @@ push / pull request
 │  2. Trivy HIGH/CRITICAL           │
 │  3. DAST: compose → ZAP baseline  │  ← bramka: WARN/FAIL ZAP = stop
 └───────────────┬───────────────────┘
-                │ tylko master + skonfigurowane OCI
-                ▼
+                │
+       ┌────────┴────────┐
+       ▼                 ▼
+┌─────────────────┐  ┌──────────────────────────────┐
+│ deploy-oracle   │  │ deploy (Azure, opcjonalnie)  │
+│ SSH → VM        │  │ ACR → Container Apps         │
+│ git pull        │  └──────────────────────────────┘
+│ docker compose  │
+│ up -d --build   │
+│ smoke :80       │
+└─────────────────┘
+       │ (opcjonalnie, gdy OCI_TENANCY_NAMESPACE)
+       ▼
 ┌───────────────────────────────────┐
-│ GitHub Actions → OCIR             │
-│  docker build / push fishing-api  │
-│  docker build / push fishing-web  │
-│  oci devops deployment create     │
-└───────────────┬───────────────────┘
-                ▼
-┌───────────────────────────────────┐
-│ OCI DevOps                        │
-│  staging (OKE / Compute)          │
-│  ZAP baseline (zap_build_spec)    │  ← skan po HTTPS, jak produkcja
-│  manual approval                  │
-│  produkcja                        │
+│ GitHub Actions → OCIR + DevOps    │
+│ (oci-deploy.yml – osobna ścieżka) │
 └───────────────────────────────────┘
 ```
 
 DAST nigdy nie celuje w produkcję. Baseline (pasywny) jest bezpieczny na współdzielonym stagingu. Full scan (`zap-full-scan.py`) tylko na izolowanym środowisku – aktywne payloady mogą pisać do bazy.
+
+## Automatyczny deploy na VM (SSH) – to, czego używacie teraz
+
+Po zaliczonym teście i ZAP job `deploy-oracle` łączy się z Compute (`opc@ORACLE_SSH_HOST`), robi `git pull` w katalogu aplikacji i `sudo docker compose up -d --build`, potem smoke na `http://127.0.0.1/healthz`.
+
+### Jednorazowa konfiguracja
+
+1. Na VM: klon repo w `/home/opc/app`, działający `.env` z `JWT_SECRET` (≥ 32 znaki) i `PG_SSL=disable`.
+2. `git pull` z GitHuba musi działać bez hasła (publiczne repo albo deploy key w `~/.ssh` na VM).
+3. OCI Security List / NSG: **TCP 22** z GitHub Actions (albo `0.0.0.0/0` na demo) oraz **TCP 80** dla przeglądarki.
+4. Instancja musi być **Running** – zatrzymana VM = padnięty deploy.
+
+**Settings → Secrets and variables → Actions**
+
+| Secrets | Wartość |
+|---|---|
+| `ORACLE_SSH_PRIVATE_KEY` | cała zawartość pliku `.key` (PEM), ten sam co do `ssh -i … opc@…` |
+
+| Variables | Wartość |
+|---|---|
+| `ORACLE_SSH_HOST` | `130.162.208.180` (włącza job; bez tego deploy Oracle jest pomijany) |
+| `ORACLE_SSH_USER` | opcjonalnie `opc` (domyślnie `opc`) |
+| `ORACLE_SSH_PORT` | opcjonalnie `22` |
+| `ORACLE_APP_DIR` | opcjonalnie `/home/opc/app` |
+
+Po ustawieniu: każdy push na `master` → testy → DAST → aktualizacja na VM → aplikacja pod `http://130.162.208.180`.
 
 ## Co jest w repozytorium
 
 | Plik | Rola |
 |---|---|
 | `.github/workflows/dast.yml` | ZAP przeciwko `docker compose` (każdy PR/push) oraz opcjonalnie przeciwko `OCI_STAGING_URL` |
-| `.github/workflows/deploy.yml` | testy + Trivy + wywołanie DAST + deploy Azure |
+| `.github/workflows/deploy.yml` | testy + Trivy + DAST + **deploy-oracle (SSH)** + deploy Azure |
 | `.github/workflows/oci-deploy.yml` | push do OCIR i start pipeline DevOps (gdy `OCI_TENANCY_NAMESPACE` jest ustawione) |
 | `.zap/rules.tsv` | świadomie zaakceptowane alerty ZAP (reszta blokuje) |
 | `docker-compose.dast.yml` | HSTS max-age na czas skanu CI |
@@ -83,12 +110,14 @@ To jest właściwa bramka merge'a. Etap OCI jest drugim skanem już po HTTPS, na
 
 | Variables | Po co |
 |---|---|
+| `ORACLE_SSH_HOST` | IP/host VM; **włącza** job `deploy-oracle` (SSH + compose) |
+| `ORACLE_SSH_USER` / `ORACLE_APP_DIR` / `ORACLE_SSH_PORT` | opcjonalne (domyślnie `opc`, `/home/opc/app`, `22`) |
 | `OCI_TENANCY_NAMESPACE` | namespace OCIR; **włącza** `oci-deploy.yml` |
 | `OCI_REGION` | np. `eu-frankfurt-1` |
 | `OCI_DEPLOY_PIPELINE_OCID` | pipeline DevOps (staging) |
 | `OCI_STAGING_URL` | `https://…` – skan ZAP z GitHuba po wdrożeniu |
 
-Dopóki `OCI_TENANCY_NAMESPACE` jest puste, job OCI jest pomijany – Azure i DAST na compose działają dalej.
+Dopóki `ORACLE_SSH_HOST` / `OCI_TENANCY_NAMESPACE` są puste, odpowiednie joby są pomijane – DAST i Azure działają dalej.
 
 Klucz API w sekretach to baseline Oracle Actions. Bezpieczniejszy wariant (jak OIDC przy Azure): [Workload Identity Federation / token exchange GitHub → OCI](https://www.ateam-oracle.com/github-actions-oci-a-guide-to-secure-oidc-token-exchange).
 

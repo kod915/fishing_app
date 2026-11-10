@@ -1,8 +1,7 @@
-# CI/CD: testy -> DAST (ZAP) -> obrazy w ACR -> migracje (job-release) -> rollout api i web.
-# Logowanie do Azure przez OIDC (federated credential) – żadnego hasła/klucza w sekretach GitHuba.
-# Wymagane zmienne repozytorium (Settings -> Variables): AZURE_CLIENT_ID, AZURE_TENANT_ID,
-# AZURE_SUBSCRIPTION_ID, AZURE_RG, AZURE_ACR. Konfiguracja: infra/azure/README.md, sekcja 5.
-# DAST: .github/workflows/dast.yml, proces OCI: infra/oci/README.md
+# CI/CD: testy -> DAST (ZAP) -> deploy Oracle (SSH) i/lub Azure.
+# Oracle: Settings -> Secrets: ORACLE_SSH_PRIVATE_KEY; Variables: ORACLE_SSH_HOST.
+# Azure OIDC: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_RG, AZURE_ACR
+#   (infra/azure/README.md §5). DAST: dast.yml. Oracle SSH: infra/oci/README.md.
 name: deploy
 
 on:
@@ -58,6 +57,49 @@ jobs:
       contents: read
     with:
       scan_oci_staging: ${{ github.event_name != 'pull_request' }}
+
+  # VM Oracle (docker compose w /home/opc/app): git pull + rebuild po zaliczonym DAST.
+  deploy-oracle:
+    needs: [test, dast]
+    if: github.event_name != 'pull_request' && vars.ORACLE_SSH_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Deploy przez SSH (git pull + docker compose)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ vars.ORACLE_APP_DIR }}
+        with:
+          host: ${{ vars.ORACLE_SSH_HOST }}
+          username: ${{ vars.ORACLE_SSH_USER || 'opc' }}
+          key: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+          port: ${{ vars.ORACLE_SSH_PORT || 22 }}
+          envs: APP_DIR
+          script_stop: true
+          command_timeout: 25m
+          script: |
+            set -euo pipefail
+            APP_DIR="${APP_DIR:-/home/opc/app}"
+            cd "$APP_DIR"
+            git fetch origin
+            git checkout master
+            git pull --ff-only origin master
+            # JWT_SECRET musi być w .env na serwerze (nie w Gicie)
+            test -f .env
+            grep -q '^JWT_SECRET=' .env
+            grep -q '^PG_SSL=' .env || echo 'PG_SSL=disable' >> .env
+            sudo docker compose up -d --build
+            sudo docker compose ps
+            # Frontend na tej VM mapuje host :80 -> kontener :8080
+            for i in $(seq 1 40); do
+              if curl -fsS http://127.0.0.1/healthz >/dev/null \
+                 && curl -fsS http://127.0.0.1/api/tournaments >/dev/null; then
+                echo "smoke OK after ${i} checks"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "smoke timeout"; sudo docker compose logs --tail=80; exit 1
 
   deploy:
     needs: [test, dast]

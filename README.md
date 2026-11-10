@@ -165,7 +165,7 @@ Schemat jest w całości opisany migracjami SQL w `backend/db/migrations/` (`nod
 
 Propozycja bezpiecznego wdrożenia w Azure (Container Apps z wewnętrznym `api` i publicznym `web`, prywatny PostgreSQL, Managed Redis, Key Vault z managed identity, CI/CD przez OIDC) wraz ze skryptem `deploy.sh` i listą kontrolną bezpieczeństwa: [`infra/azure/README.md`](infra/azure/README.md).
 
-CI/CD z bramką DAST (OWASP ZAP) i ścieżką wdrożenia na Oracle Cloud (GitHub Actions → OCIR → OCI DevOps, drugi skan ZAP na stagingu): [`infra/oci/README.md`](infra/oci/README.md).
+CI/CD z bramką DAST (OWASP ZAP), automatycznym deployem na VM Oracle (`git push` → testy → SSH → `docker compose up`) oraz opcjonalnie OCIR/DevOps: [`infra/oci/README.md`](infra/oci/README.md).
 
 ## Znane braki / dalsze kroki
 
