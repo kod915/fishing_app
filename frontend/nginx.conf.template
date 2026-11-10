@@ -24,6 +24,7 @@ server {
     add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
     add_header Cross-Origin-Resource-Policy "same-origin" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "require-corp" always;
     add_header X-Permitted-Cross-Domain-Policies "none" always;
     add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${CSP_CONNECT_SRC}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
     # HSTS ma sens dopiero gdy domena działa po HTTPS (ustaw HSTS_MAX_AGE=31536000)
