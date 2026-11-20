@@ -29,7 +29,7 @@ jobs:
       JWT_SECRET: dast-ci-secret-not-for-production-use-32b
       HSTS_MAX_AGE: "31536000"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
