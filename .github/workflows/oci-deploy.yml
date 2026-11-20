@@ -61,7 +61,7 @@ jobs:
 
       - name: Uruchom pipeline wdrożenia OCI DevOps (staging)
         if: vars.OCI_DEPLOY_PIPELINE_OCID != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: devops deployment create --pipeline-id "${{ vars.OCI_DEPLOY_PIPELINE_OCID }}" --deployment-type PIPELINE --display-name "gh-${{ github.sha }}" --deployment-arguments '{"items":[{"name":"IMAGE_TAG","value":"${{ github.sha }}"}]}'
           silent: false
