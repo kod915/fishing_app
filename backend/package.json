@@ -22,7 +22,7 @@
     "jsonwebtoken": "^9.0.2",
     "node-pg-migrate": "^9.0.0",
     "pg": "^8.11.5",
-    "rate-limit-redis": "^4.2.0",
+    "rate-limit-redis": "^6.0.2",
     "redis": "^4.7.1",
     "socket.io": "^4.8.4"
   },
