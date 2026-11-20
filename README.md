@@ -113,6 +113,8 @@ docker compose run --rm -e NODE_ENV=development backend npm run db:seed   # kont
 
 Aplikacja: http://localhost:8080. Usługa `migrate` uruchamia migracje przed startem backendu (tak jak krok release w chmurze); backend działa z `NODE_ENV=production`. Zatrzymanie: `docker compose down` (z `-v` usuwa też dane).
 
+Na VM Oracle ten sam Compose czyta sekrety z `/home/opc/secrets/fishing.env` (`docker compose --env-file …`). Plik nie wchodzi do Gita. Szczegóły: [`infra/oci/README.md`](infra/oci/README.md).
+
 ## Konfiguracja (zmienne środowiskowe backendu)
 
 | Zmienna | Domyślnie | Opis |

@@ -2,3 +2,12 @@ backend/node_modules
 frontend/node_modules
 frontend/dist
 .env
+*.env
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+credentials.json

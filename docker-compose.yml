@@ -3,6 +3,8 @@
 #
 #   export JWT_SECRET=$(openssl rand -base64 48)      # PowerShell: $env:JWT_SECRET = "<min. 32 znaki>"
 #   docker compose up --build -d --scale backend=3
+# Na VM Oracle nie trzymaj sekretów w klonie. Deploy woła:
+#   docker compose --env-file /home/opc/secrets/fishing.env up -d --build
 #   docker compose run --rm -e NODE_ENV=development backend npm run db:seed   # konta demo (haslo123)
 #
 # Aplikacja: http://localhost:8080
@@ -58,10 +60,12 @@ services:
       REDIS_URL: redis://redis:6379
       # Brak wartości = błąd startu, nie cichy słaby klucz
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (min. 32 chars)}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
       # Frontend jest na tym samym origin (nginx proxuje /api) – CORS tylko dla dev-serwera Vite
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
-      TRUST_PROXY_HOPS: 1
-      PG_POOL_MAX: 8
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      PG_POOL_MAX: ${PG_POOL_MAX:-8}
       # Postgres w tej samej sieci Dockera, bez certyfikatu TLS. W chmurze NIE ustawiać.
       PG_SSL: disable
     depends_on:

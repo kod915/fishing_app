@@ -39,14 +39,17 @@ DAST nigdy nie celuje w produkcję. Baseline (pasywny) jest bezpieczny na wspó�
 
 ## Automatyczny deploy na VM (SSH) – to, czego używacie teraz
 
-Po zaliczonym teście i ZAP job `deploy-oracle` łączy się z Compute (`opc@ORACLE_SSH_HOST`), robi `git pull` w katalogu aplikacji i `sudo docker compose up -d --build`, potem smoke na `http://127.0.0.1/healthz`.
+Po zaliczonym teście i ZAP job `deploy-oracle` łączy się z Compute (`opc@ORACLE_SSH_HOST`), robi `git pull` w katalogu aplikacji i `sudo docker compose --env-file /home/opc/secrets/fishing.env up -d --build`, potem smoke na `http://127.0.0.1/healthz`.
+
+Sekretów nie ma w GitHubie ani w klonie repozytorium. Aplikacja dostaje je ze środowiska kontenera. Compose wczytuje je z pliku na dysku VM.
 
 ### Jednorazowa konfiguracja
 
-1. Na VM: klon repo w `/home/opc/app`, działający `.env` z `JWT_SECRET` (≥ 32 znaki) i `PG_SSL=disable`.
-2. `git pull` z GitHuba musi działać bez hasła (publiczne repo albo deploy key w `~/.ssh` na VM).
-3. OCI Security List / NSG: **TCP 22** z GitHub Actions (albo `0.0.0.0/0` na demo) oraz **TCP 80** dla przeglądarki.
-4. Instancja musi być **Running** – zatrzymana VM = padnięty deploy.
+1. Na VM: klon repo w `/home/opc/app`.
+2. Plik sekretów **poza** tym katalogiem: `/home/opc/secrets/fishing.env`, uprawnienia katalogu `700`, pliku `600`. Wzór: `infra/oci/fishing.env.example`. `JWT_SECRET` minimum 32 znaki (`openssl rand -base64 48`). Jeśli został stary `/home/opc/app/.env`, pierwszy deploy przeniesie go w to miejsce. Drugi plik w klonie zatrzymuje wdrożenie — po przeniesieniu skasuj kopię.
+3. `git pull` z GitHuba musi działać bez hasła (publiczne repo albo deploy key w `~/.ssh` na VM).
+4. OCI Security List / NSG: **TCP 22** z GitHub Actions (albo `0.0.0.0/0` na demo) oraz **TCP 80** dla przeglądarki.
+5. Instancja musi być **Running** – zatrzymana VM = padnięty deploy.
 
 **Settings → Secrets and variables → Actions**
 
@@ -60,8 +63,34 @@ Po zaliczonym teście i ZAP job `deploy-oracle` łączy się z Compute (`opc@ORA
 | `ORACLE_SSH_USER` | opcjonalnie `opc` (domyślnie `opc`) |
 | `ORACLE_SSH_PORT` | opcjonalnie `22` |
 | `ORACLE_APP_DIR` | opcjonalnie `/home/opc/app` |
+| `ORACLE_SECRETS_FILE` | opcjonalnie; domyślnie `/home/opc/secrets/fishing.env` |
 
-Po ustawieniu: każdy push na `master` → testy → DAST → aktualizacja na VM → aplikacja pod `http://130.162.208.180`.
+Po ustawieniu: merge do `master` → testy → DAST → (po zatwierdzeniu środowiska `production`) aktualizacja na VM → aplikacja pod `http://130.162.208.180`.
+
+Joby `deploy-oracle` i `deploy` są przypięte do środowiska GitHub **production**. Sama nazwa nic nie blokuje. Bramka pojawia się dopiero w **Settings → Environments → production → Required reviewers**.
+
+## Kto może pushować i mergować
+
+`git pull` (pobranie kodu) nie wymaga zatwierdzenia — to odczyt. Zatwierdzenia wymaga **pull request** oraz wdrożenie.
+
+W **Settings → Collaborators and teams** (albo na organizacji: zespół z dostępem do repo):
+
+| Rola | Co może |
+|---|---|
+| Read | klonować i robić `git pull`, bez pusha |
+| Write | pchać branche i otwierać pull requesty; nie zmienia reguł ani sekretów |
+| Admin | reguły, sekrety Actions, środowiska — tylko osoby, które mają tym zarządzać |
+
+Potem **Settings → Rules → Rulesets → New branch ruleset**, target: gałąź `master`, enforcement **Active**:
+
+- Restrict deletions
+- Block force pushes
+- Require a pull request before merging, **Required approvals: 1**, włącz **Dismiss stale pull request approvals when new commits are pushed**
+- Require status checks to pass: `test` i `dast` (nazwy z zakładki Checks po pierwszym PR), oraz **Require branches to be up to date before merging**
+
+Nie dodawaj siebie do Bypass, jeśli zatwierdzenie ma obowiązywać także administratora. Przy jednej osobie w repozytorium wymagana recenzja blokuje merge (autor PR nie może zaakceptować własnych zmian) — wtedy albo dodaj drugie konto z rolą Write, albo zostaw wymagane status checki bez liczby recenzji, a recenzję włącz gdy pojawi się druga osoba.
+
+Zmiana wchodzi na VM dopiero po merge do `master` i po kliknięciu **Review deployments** przy środowisku `production`, o ile required reviewers są ustawieni.
 
 ## Co jest w repozytorium
 
@@ -69,6 +98,8 @@ Po ustawieniu: każdy push na `master` → testy → DAST → aktualizacja na VM
 |---|---|
 | `.github/workflows/dast.yml` | ZAP przeciwko `docker compose` (każdy PR/push) oraz opcjonalnie przeciwko `OCI_STAGING_URL` |
 | `.github/workflows/deploy.yml` | testy + Trivy + DAST + **deploy-oracle (SSH)** + deploy Azure |
+| `infra/oci/check-secrets.sh` | odrzuca sekret w klonie Gita, słaby `JWT_SECRET` i plik inny niż `600` |
+| `infra/oci/fishing.env.example` | wzór pliku, który na VM ląduje w `/home/opc/secrets/fishing.env` |
 | `.github/workflows/oci-deploy.yml` | push do OCIR i start pipeline DevOps (gdy `OCI_TENANCY_NAMESPACE` jest ustawione) |
 | `.zap/rules.tsv` | świadomie zaakceptowane alerty ZAP (reszta blokuje) |
 | `docker-compose.dast.yml` | HSTS max-age na czas skanu CI |
@@ -111,7 +142,7 @@ To jest właściwa bramka merge'a. Etap OCI jest drugim skanem już po HTTPS, na
 | Variables | Po co |
 |---|---|
 | `ORACLE_SSH_HOST` | IP/host VM; **włącza** job `deploy-oracle` (SSH + compose) |
-| `ORACLE_SSH_USER` / `ORACLE_APP_DIR` / `ORACLE_SSH_PORT` | opcjonalne (domyślnie `opc`, `/home/opc/app`, `22`) |
+| `ORACLE_SSH_USER` / `ORACLE_APP_DIR` / `ORACLE_SSH_PORT` / `ORACLE_SECRETS_FILE` | opcjonalne (domyślnie `opc`, `/home/opc/app`, `22`, `/home/opc/secrets/fishing.env`) |
 | `OCI_TENANCY_NAMESPACE` | namespace OCIR; **włącza** `oci-deploy.yml` |
 | `OCI_REGION` | np. `eu-frankfurt-1` |
 | `OCI_DEPLOY_PIPELINE_OCID` | pipeline DevOps (staging) |
