@@ -80,7 +80,7 @@ jobs:
     environment: production
     steps:
       - name: Deploy przez SSH (git pull + docker compose)
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         env:
           APP_DIR: ${{ vars.ORACLE_APP_DIR }}
           SECRETS_FILE: ${{ vars.ORACLE_SECRETS_FILE }}
